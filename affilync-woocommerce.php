@@ -164,6 +164,13 @@ final class Affilync_WooCommerce {
     public $product_sync;
 
     /**
+     * Subscription billing.
+     *
+     * @var Affilync_Billing_Subscription
+     */
+    public $subscription;
+
+    /**
      * Get plugin instance.
      *
      * @return Affilync_WooCommerce
@@ -206,6 +213,9 @@ final class Affilync_WooCommerce {
 
         // Sync classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/sync/class-affilync-sync-product-sync.php';
+
+        // Billing classes.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/billing/class-affilync-billing-subscription.php';
 
         // Admin classes.
         if ( is_admin() ) {
@@ -266,6 +276,9 @@ final class Affilync_WooCommerce {
 
         // Initialize product sync.
         $this->product_sync = new Affilync_Sync_Product_Sync( $this->api_client );
+
+        // Initialize subscription billing.
+        $this->subscription = new Affilync_Billing_Subscription( $this->api_client, $this->encryption );
 
         // Initialize REST API.
         add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
