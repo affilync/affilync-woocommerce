@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<phpunit
+    bootstrap="tests/bootstrap.php"
+    backupGlobals="false"
+    colors="true"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="true"
+    convertWarningsToExceptions="true"
+    >
+    <testsuites>
+        <testsuite name="unit">
+            <directory suffix=".php">./tests/unit</directory>
+        </testsuite>
+        <testsuite name="integration">
+            <directory suffix=".php">./tests/integration</directory>
+        </testsuite>
+    </testsuites>
+    <php>
+        <const name="AFFILYNC_ENCRYPTION_KEY" value="test_encryption_key_for_phpunit_testing_32c"/>
+        <const name="AFFILYNC_WEBHOOK_SECRET" value="whsec_test_secret_for_phpunit"/>
+    </php>
+</phpunit>

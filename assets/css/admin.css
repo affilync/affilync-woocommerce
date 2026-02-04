@@ -1,0 +1,289 @@
+/**
+ * Affilync WooCommerce Admin Styles
+ *
+ * Design tokens from Affilync brand:
+ * --affilync-primary: #0066e6 (Deep Blue)
+ * --affilync-success: #00ff88 (Neon Green)
+ * --affilync-warning: #ffcc00 (Amber)
+ * --affilync-error: #ff3366 (Coral)
+ * --affilync-background: #0a0e1a (Dark Terminal)
+ */
+
+:root {
+    --affilync-primary: #0066e6;
+    --affilync-primary-light: #3385eb;
+    --affilync-primary-dark: #0052b3;
+    --affilync-success: #00cc6e;
+    --affilync-warning: #e6b800;
+    --affilync-error: #cc0033;
+    --affilync-text: #1d2327;
+    --affilync-text-muted: #646970;
+    --affilync-border: #c3c4c7;
+    --affilync-bg-light: #f6f7f7;
+}
+
+/* Settings Page Layout */
+.affilync-settings {
+    max-width: 1200px;
+}
+
+.affilync-settings .nav-tab-wrapper {
+    margin-bottom: 20px;
+}
+
+.affilync-settings .nav-tab-active {
+    background: #fff;
+    border-bottom-color: #fff;
+}
+
+.affilync-tab-content {
+    background: #fff;
+    padding: 20px;
+    border: 1px solid var(--affilync-border);
+    border-top: none;
+}
+
+/* Connection Status */
+.affilync-connection-status {
+    background: var(--affilync-bg-light);
+    padding: 20px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.affilync-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.affilync-status .dashicons {
+    font-size: 24px;
+    width: 24px;
+    height: 24px;
+}
+
+.affilync-status.connected .dashicons {
+    color: var(--affilync-success);
+}
+
+.affilync-status.disconnected .dashicons {
+    color: var(--affilync-error);
+}
+
+.affilync-status .brand-id {
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 1px solid var(--affilync-border);
+    color: var(--affilync-text-muted);
+    font-size: 13px;
+}
+
+/* Stats Cards */
+.affilync-stats-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.stat-card {
+    background: #fff;
+    border: 1px solid var(--affilync-border);
+    border-radius: 4px;
+    padding: 20px;
+    text-align: center;
+}
+
+.stat-card h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--affilync-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-card .stat-value {
+    font-size: 32px;
+    font-weight: 600;
+    color: var(--affilync-primary);
+}
+
+/* Sync Status */
+.affilync-sync-status {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 15px;
+    background: var(--affilync-bg-light);
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.affilync-sync-status span {
+    font-size: 14px;
+}
+
+/* Tables */
+.affilync-settings .wp-list-table {
+    margin-top: 20px;
+}
+
+.affilync-settings .wp-list-table th {
+    font-weight: 600;
+}
+
+/* Status Badges */
+.status-pending {
+    color: var(--affilync-warning);
+}
+
+.status-approved,
+.status-synced {
+    color: var(--affilync-success);
+}
+
+.status-rejected,
+.status-failed {
+    color: var(--affilync-error);
+}
+
+/* Severity Badges */
+.severity-info {
+    color: var(--affilync-primary);
+}
+
+.severity-warning {
+    color: var(--affilync-warning);
+}
+
+.severity-error {
+    color: var(--affilync-error);
+}
+
+.severity-critical {
+    color: #fff;
+    background: var(--affilync-error);
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+/* Buttons */
+.affilync-settings .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.affilync-settings .button-primary {
+    background: var(--affilync-primary);
+    border-color: var(--affilync-primary);
+}
+
+.affilync-settings .button-primary:hover,
+.affilync-settings .button-primary:focus {
+    background: var(--affilync-primary-dark);
+    border-color: var(--affilync-primary-dark);
+}
+
+/* Form Fields */
+.affilync-settings .form-table th {
+    width: 200px;
+    padding-left: 0;
+}
+
+.affilync-settings .form-table td {
+    padding-left: 0;
+}
+
+.affilync-settings select[multiple] {
+    min-height: 100px;
+}
+
+/* Loading State */
+.affilync-loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.affilync-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 2px solid var(--affilync-border);
+    border-top-color: var(--affilync-primary);
+    border-radius: 50%;
+    animation: affilync-spin 0.8s linear infinite;
+}
+
+@keyframes affilync-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Notices */
+.affilync-notice {
+    padding: 12px;
+    margin: 15px 0;
+    border-left: 4px solid var(--affilync-primary);
+    background: #fff;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.affilync-notice.success {
+    border-left-color: var(--affilync-success);
+}
+
+.affilync-notice.error {
+    border-left-color: var(--affilync-error);
+}
+
+.affilync-notice.warning {
+    border-left-color: var(--affilync-warning);
+}
+
+/* Responsive */
+@media screen and (max-width: 782px) {
+    .affilync-connection-status {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .affilync-stats-cards {
+        grid-template-columns: 1fr;
+    }
+
+    .affilync-sync-status {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .stat-card .stat-value {
+        font-size: 24px;
+    }
+}
+
+/* Dark Mode Support (when WP has it) */
+@media (prefers-color-scheme: dark) {
+    body.admin-color-modern .affilync-settings .stat-card,
+    body.admin-color-modern .affilync-settings .affilync-tab-content {
+        background: #1d2327;
+        border-color: #3c434a;
+    }
+
+    body.admin-color-modern .affilync-connection-status,
+    body.admin-color-modern .affilync-sync-status,
+    body.admin-color-modern .affilync-settings var(--affilync-bg-light) {
+        background: #2c3338;
+    }
+}

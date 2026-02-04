@@ -1,0 +1,28 @@
+# Dependencies
+/vendor/
+/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.log
+*.cache
+
+# PHPUnit
+.phpunit.result.cache
+/coverage/
+
+# Composer
+composer.lock
+
+# WordPress specific
+*.mo
