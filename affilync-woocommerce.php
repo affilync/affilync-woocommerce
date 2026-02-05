@@ -4,8 +4,8 @@
  *
  * @package           Affilync_WooCommerce
  * @author            Affilync
- * @copyright         2024 Affilync
- * @license           GPL-2.0-or-later
+ * @copyright         2024-2026 Affilync. All Rights Reserved.
+ * @license           Proprietary
  *
  * @wordpress-plugin
  * Plugin Name:       Affilync for WooCommerce
@@ -18,20 +18,25 @@
  * Author URI:        https://affilync.com
  * Text Domain:       affilync-woocommerce
  * Domain Path:       /languages
- * License:           GPL v2 or later
- * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
+ * License:           Proprietary - See LICENSE.txt
+ * License URI:       https://affilync.com/legal/plugin-license
  * WC requires at least: 5.0
  * WC tested up to:   8.5
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
+ * PROPRIETARY SOFTWARE LICENSE
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * This software is protected by copyright law and international treaties.
+ * Unauthorized reproduction, distribution, modification, or reverse engineering
+ * of this software, or any portion of it, is strictly prohibited and may result
+ * in severe civil and criminal penalties.
+ *
+ * This software requires a valid license key for operation. Each license is
+ * valid for a single WordPress installation and is bound to the licensed domain.
+ *
+ * For licensing inquiries: licensing@affilync.com
+ * For support: support@affilync.com
+ *
+ * (c) 2024-2026 Affilync. All Rights Reserved.
  */
 
 // Prevent direct file access.
@@ -69,12 +74,16 @@ spl_autoload_register( function( $class ) {
 
     // Map class prefixes to directories.
     $prefix_map = array(
-        'Affilync_Admin'    => 'admin',
-        'Affilync_API'      => 'api',
-        'Affilync_Security' => 'security',
-        'Affilync_Tracking' => 'tracking',
-        'Affilync_Sync'     => 'sync',
-        'Affilync_Helper'   => 'helpers',
+        'Affilync_Admin'        => 'admin',
+        'Affilync_API'          => 'api',
+        'Affilync_Security'     => 'security',
+        'Affilync_Tracking'     => 'tracking',
+        'Affilync_Sync'         => 'sync',
+        'Affilync_Helper'       => 'helpers',
+        'Affilync_Billing'      => 'billing',
+        'Affilync_Verification' => 'verification',
+        'Affilync_Notification' => 'notifications',
+        'Affilync_License'      => 'licensing',
     );
 
     $file_path = null;
@@ -171,6 +180,41 @@ final class Affilync_WooCommerce {
     public $subscription;
 
     /**
+     * Brand verification.
+     *
+     * @var Affilync_Verification_Brand
+     */
+    public $brand_verification;
+
+    /**
+     * Email notifications.
+     *
+     * @var Affilync_Notification_Email
+     */
+    public $email_notifications;
+
+    /**
+     * License manager.
+     *
+     * @var Affilync_License_Manager
+     */
+    public $license_manager;
+
+    /**
+     * Integrity checker.
+     *
+     * @var Affilync_Security_Integrity
+     */
+    public $integrity;
+
+    /**
+     * Whether the license is valid.
+     *
+     * @var bool
+     */
+    private $license_valid = false;
+
+    /**
      * Get plugin instance.
      *
      * @return Affilync_WooCommerce
@@ -194,12 +238,16 @@ final class Affilync_WooCommerce {
      * Include required files.
      */
     private function includes() {
-        // Security classes.
+        // Security classes (load first for encryption).
         require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-encryption.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-nonce-manager.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-rate-limiter.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-hmac-validator.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-audit-logger.php';
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php';
+
+        // Licensing classes (load early for validation).
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/licensing/class-affilync-license-manager.php';
 
         // API classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/api/class-affilync-api-client.php';
@@ -217,10 +265,17 @@ final class Affilync_WooCommerce {
         // Billing classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/billing/class-affilync-billing-subscription.php';
 
+        // Verification classes.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/verification/class-affilync-verification-brand.php';
+
+        // Notification classes.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/notifications/class-affilync-notification-email.php';
+
         // Admin classes.
         if ( is_admin() ) {
             require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-settings.php';
             require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-dashboard-widget.php';
+            require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-stats.php';
         }
 
         // Helper classes.
@@ -246,6 +301,9 @@ final class Affilync_WooCommerce {
 
         // Add plugin action links.
         add_filter( 'plugin_action_links_' . AFFILYNC_PLUGIN_BASENAME, array( $this, 'plugin_action_links' ) );
+
+        // Register cron handlers.
+        add_action( 'affilync_cleanup_expired', array( $this, 'cleanup_expired' ) );
     }
 
     /**
@@ -258,12 +316,55 @@ final class Affilync_WooCommerce {
             return;
         }
 
-        // Initialize security components.
+        // Initialize security components first (required for license manager).
         $this->encryption     = new Affilync_Security_Encryption();
+        $this->audit_logger   = new Affilync_Security_Audit_Logger();
+
+        // Initialize integrity checker and verify plugin hasn't been tampered with.
+        $this->integrity = new Affilync_Security_Integrity( $this->audit_logger );
+        if ( ! $this->integrity->verify() ) {
+            // Plugin integrity compromised - show admin notice but don't block.
+            add_action( 'admin_notices', array( $this, 'integrity_violation_notice' ) );
+
+            // In production mode, block execution.
+            if ( defined( 'AFFILYNC_PRODUCTION_MODE' ) && AFFILYNC_PRODUCTION_MODE ) {
+                $this->audit_logger->critical( 'integrity_block', array( 'action' => 'plugin_disabled' ) );
+                return;
+            }
+        }
+
+        // Initialize license manager and check validity.
+        $this->license_manager = new Affilync_License_Manager( $this->encryption, $this->audit_logger );
+        $this->license_valid   = $this->license_manager->is_valid();
+
+        // Check license status.
+        if ( ! $this->license_valid ) {
+            // Only show admin notices and settings page - disable functionality.
+            add_action( 'admin_notices', array( $this, 'license_invalid_notice' ) );
+
+            // Still initialize admin settings for license management.
+            if ( is_admin() ) {
+                new Affilync_Admin_Settings();
+            }
+
+            // Log license check.
+            $this->audit_logger->warning(
+                'license_check_failed',
+                array( 'status' => $this->license_manager->get_status() )
+            );
+
+            return;
+        }
+
+        // Show grace period warning if applicable.
+        if ( $this->license_manager->is_grace_period() ) {
+            add_action( 'admin_notices', array( $this, 'license_grace_period_notice' ) );
+        }
+
+        // Initialize remaining security components.
         $this->nonce_manager  = new Affilync_Security_Nonce_Manager();
         $this->rate_limiter   = new Affilync_Security_Rate_Limiter();
         $this->hmac_validator = new Affilync_Security_HMAC_Validator();
-        $this->audit_logger   = new Affilync_Security_Audit_Logger();
 
         // Initialize API components.
         $this->api_client = new Affilync_API_Client( $this->encryption, $this->rate_limiter );
@@ -280,6 +381,12 @@ final class Affilync_WooCommerce {
         // Initialize subscription billing.
         $this->subscription = new Affilync_Billing_Subscription( $this->api_client, $this->encryption );
 
+        // Initialize brand verification.
+        $this->brand_verification = new Affilync_Verification_Brand( $this->api_client, $this->audit_logger );
+
+        // Initialize email notifications.
+        $this->email_notifications = new Affilync_Notification_Email( $this->api_client, $this->encryption );
+
         // Initialize REST API.
         add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 
@@ -287,6 +394,7 @@ final class Affilync_WooCommerce {
         if ( is_admin() ) {
             new Affilync_Admin_Settings();
             new Affilync_Admin_Dashboard_Widget();
+            new Affilync_Admin_Stats();
         }
 
         // Initialize OAuth handler.
@@ -301,6 +409,89 @@ final class Affilync_WooCommerce {
          * @since 1.0.0
          */
         do_action( 'affilync_woocommerce_init' );
+    }
+
+    /**
+     * Display notice when license is invalid.
+     */
+    public function license_invalid_notice() {
+        $status = $this->license_manager->get_status();
+        $settings_url = admin_url( 'admin.php?page=affilync-settings&tab=license' );
+
+        $messages = array(
+            Affilync_License_Manager::STATUS_UNCHECKED => __( 'Please activate your license to use Affilync.', 'affilync-woocommerce' ),
+            Affilync_License_Manager::STATUS_INVALID   => __( 'Your Affilync license is invalid. Please check your license key.', 'affilync-woocommerce' ),
+            Affilync_License_Manager::STATUS_EXPIRED   => __( 'Your Affilync license has expired. Please renew to continue using the plugin.', 'affilync-woocommerce' ),
+            Affilync_License_Manager::STATUS_SUSPENDED => __( 'Your Affilync license has been suspended. Please contact support.', 'affilync-woocommerce' ),
+        );
+
+        $message = isset( $messages[ $status ] ) ? $messages[ $status ] : $messages[ Affilync_License_Manager::STATUS_INVALID ];
+        ?>
+        <div class="notice notice-error">
+            <p>
+                <strong><?php esc_html_e( 'Affilync for WooCommerce:', 'affilync-woocommerce' ); ?></strong>
+                <?php echo esc_html( $message ); ?>
+                <a href="<?php echo esc_url( $settings_url ); ?>">
+                    <?php esc_html_e( 'Manage License', 'affilync-woocommerce' ); ?>
+                </a>
+            </p>
+        </div>
+        <?php
+    }
+
+    /**
+     * Display notice when license is in grace period.
+     */
+    public function license_grace_period_notice() {
+        $days_remaining = $this->license_manager->get_grace_days_remaining();
+        $settings_url = admin_url( 'admin.php?page=affilync-settings&tab=license' );
+        ?>
+        <div class="notice notice-warning">
+            <p>
+                <strong><?php esc_html_e( 'Affilync License Warning:', 'affilync-woocommerce' ); ?></strong>
+                <?php
+                echo esc_html(
+                    sprintf(
+                        /* translators: %d: Days remaining */
+                        _n(
+                            'Unable to verify your license. Plugin will be disabled in %d day unless connection is restored.',
+                            'Unable to verify your license. Plugin will be disabled in %d days unless connection is restored.',
+                            $days_remaining,
+                            'affilync-woocommerce'
+                        ),
+                        $days_remaining
+                    )
+                );
+                ?>
+                <a href="<?php echo esc_url( $settings_url ); ?>">
+                    <?php esc_html_e( 'Check License', 'affilync-woocommerce' ); ?>
+                </a>
+            </p>
+        </div>
+        <?php
+    }
+
+    /**
+     * Check if the plugin license is valid.
+     *
+     * @return bool True if license is valid.
+     */
+    public function is_licensed() {
+        return $this->license_valid;
+    }
+
+    /**
+     * Display notice when plugin integrity is compromised.
+     */
+    public function integrity_violation_notice() {
+        ?>
+        <div class="notice notice-error">
+            <p>
+                <strong><?php esc_html_e( 'Affilync Security Alert:', 'affilync-woocommerce' ); ?></strong>
+                <?php esc_html_e( 'Plugin integrity verification failed. The plugin files may have been modified. Please reinstall from the original source.', 'affilync-woocommerce' ); ?>
+            </p>
+        </div>
+        <?php
     }
 
     /**
@@ -372,6 +563,11 @@ final class Affilync_WooCommerce {
 
         // Schedule cron events.
         $this->schedule_cron_events();
+
+        // Generate file hashes for integrity checking.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php';
+        $integrity = new Affilync_Security_Integrity();
+        $integrity->generate_file_hashes();
 
         // Set activation flag for redirect.
         set_transient( 'affilync_activation_redirect', true, 30 );
@@ -538,6 +734,60 @@ final class Affilync_WooCommerce {
         wp_clear_scheduled_hook( 'affilync_sync_products' );
         wp_clear_scheduled_hook( 'affilync_sync_conversions' );
         wp_clear_scheduled_hook( 'affilync_cleanup_expired' );
+        wp_clear_scheduled_hook( 'affilync_license_revalidation' );
+    }
+
+    /**
+     * Cleanup expired data.
+     *
+     * This method is called by the 'affilync_cleanup_expired' cron event.
+     * Removes expired nonces, old rate limit records, and stale audit logs.
+     */
+    public function cleanup_expired() {
+        global $wpdb;
+
+        // Clean expired nonces.
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->prefix}affilync_nonces WHERE expires_at < %s",
+                current_time( 'mysql' )
+            )
+        );
+
+        // Clean old rate limit records (older than 24 hours).
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->prefix}affilync_rate_limits WHERE window_start < %s",
+                gmdate( 'Y-m-d H:i:s', strtotime( '-24 hours' ) )
+            )
+        );
+
+        // Clean old audit logs (older than 90 days, keep security events longer).
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->prefix}affilync_audit_log
+                 WHERE created_at < %s
+                 AND severity NOT IN ('error', 'critical')",
+                gmdate( 'Y-m-d H:i:s', strtotime( '-90 days' ) )
+            )
+        );
+
+        // Clean critical/error logs older than 1 year.
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->prefix}affilync_audit_log WHERE created_at < %s",
+                gmdate( 'Y-m-d H:i:s', strtotime( '-1 year' ) )
+            )
+        );
+
+        // Clean processed webhooks older than 30 days.
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->prefix}affilync_webhooks
+                 WHERE processed = 1 AND created_at < %s",
+                gmdate( 'Y-m-d H:i:s', strtotime( '-30 days' ) )
+            )
+        );
     }
 
     /**

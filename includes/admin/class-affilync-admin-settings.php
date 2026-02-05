@@ -49,6 +49,11 @@ class Affilync_Admin_Settings {
         add_action( 'admin_init', array( $this, 'handle_activation_redirect' ) );
         add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_scripts' ) );
         add_action( 'admin_notices', array( $this, 'display_notices' ) );
+
+        // License AJAX handlers.
+        add_action( 'wp_ajax_affilync_activate_license', array( $this, 'ajax_activate_license' ) );
+        add_action( 'wp_ajax_affilync_deactivate_license', array( $this, 'ajax_deactivate_license' ) );
+        add_action( 'wp_ajax_affilync_check_license', array( $this, 'ajax_check_license' ) );
     }
 
     /**
@@ -262,6 +267,10 @@ class Affilync_Admin_Settings {
             <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
             <nav class="nav-tab-wrapper">
+                <a href="?page=<?php echo esc_attr( self::PAGE_SLUG ); ?>&tab=license"
+                   class="nav-tab <?php echo $active_tab === 'license' ? 'nav-tab-active' : ''; ?>">
+                    <?php esc_html_e( 'License', 'affilync-woocommerce' ); ?>
+                </a>
                 <a href="?page=<?php echo esc_attr( self::PAGE_SLUG ); ?>&tab=settings"
                    class="nav-tab <?php echo $active_tab === 'settings' ? 'nav-tab-active' : ''; ?>">
                     <?php esc_html_e( 'Settings', 'affilync-woocommerce' ); ?>
@@ -283,6 +292,9 @@ class Affilync_Admin_Settings {
             <div class="affilync-tab-content">
                 <?php
                 switch ( $active_tab ) {
+                    case 'license':
+                        $this->render_license_tab();
+                        break;
                     case 'conversions':
                         $this->render_conversions_tab();
                         break;
@@ -639,12 +651,20 @@ class Affilync_Admin_Settings {
                 'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
                 'restUrl'   => rest_url( 'affilync/v1/' ),
                 'nonce'     => wp_create_nonce( 'wp_rest' ),
-                'connected' => affilync()->api_client->is_connected(),
+                'connected' => affilync()->api_client ? affilync()->api_client->is_connected() : false,
+                'licensed'  => affilync()->is_licensed(),
                 'i18n'      => array(
-                    'connecting'   => __( 'Connecting...', 'affilync-woocommerce' ),
-                    'disconnecting' => __( 'Disconnecting...', 'affilync-woocommerce' ),
-                    'syncing'      => __( 'Syncing...', 'affilync-woocommerce' ),
+                    'connecting'        => __( 'Connecting...', 'affilync-woocommerce' ),
+                    'disconnecting'     => __( 'Disconnecting...', 'affilync-woocommerce' ),
+                    'syncing'           => __( 'Syncing...', 'affilync-woocommerce' ),
                     'confirmDisconnect' => __( 'Are you sure you want to disconnect from Affilync?', 'affilync-woocommerce' ),
+                    'activating'        => __( 'Activating license...', 'affilync-woocommerce' ),
+                    'deactivating'      => __( 'Deactivating license...', 'affilync-woocommerce' ),
+                    'checking'          => __( 'Checking license...', 'affilync-woocommerce' ),
+                    'enterLicenseKey'   => __( 'Please enter a license key', 'affilync-woocommerce' ),
+                    'confirmDeactivate' => __( 'Are you sure you want to deactivate your license? You can reactivate it later.', 'affilync-woocommerce' ),
+                    'licenseActivated'  => __( 'License activated successfully! Reloading page...', 'affilync-woocommerce' ),
+                    'licenseDeactivated' => __( 'License deactivated. Reloading page...', 'affilync-woocommerce' ),
                 ),
             )
         );
@@ -669,5 +689,283 @@ class Affilync_Admin_Settings {
                 esc_html( $message )
             );
         }
+    }
+
+    /**
+     * Render license tab.
+     */
+    private function render_license_tab() {
+        $license_manager = affilync()->license_manager;
+        $license_info = $license_manager ? $license_manager->get_license_info() : array(
+            'status'      => 'unchecked',
+            'license_key' => '',
+            'expires_at'  => null,
+            'plan'        => null,
+            'last_check'  => null,
+        );
+
+        $status = $license_info['status'];
+        $status_class = $this->get_license_status_class( $status );
+        $status_label = $this->get_license_status_label( $status );
+        ?>
+        <div class="affilync-license-section">
+            <h2><?php esc_html_e( 'License Management', 'affilync-woocommerce' ); ?></h2>
+
+            <div class="affilync-license-status-card <?php echo esc_attr( $status_class ); ?>">
+                <div class="license-status-header">
+                    <span class="status-indicator"></span>
+                    <span class="status-text"><?php echo esc_html( $status_label ); ?></span>
+                </div>
+
+                <?php if ( $license_info['license_key'] ) : ?>
+                    <div class="license-details">
+                        <p>
+                            <strong><?php esc_html_e( 'License Key:', 'affilync-woocommerce' ); ?></strong>
+                            <code><?php echo esc_html( $license_info['license_key'] ); ?></code>
+                        </p>
+                        <?php if ( $license_info['plan'] ) : ?>
+                            <p>
+                                <strong><?php esc_html_e( 'Plan:', 'affilync-woocommerce' ); ?></strong>
+                                <?php echo esc_html( ucfirst( $license_info['plan'] ) ); ?>
+                            </p>
+                        <?php endif; ?>
+                        <?php if ( $license_info['expires_at'] ) : ?>
+                            <p>
+                                <strong><?php esc_html_e( 'Expires:', 'affilync-woocommerce' ); ?></strong>
+                                <?php echo esc_html( $license_info['expires_at'] ); ?>
+                            </p>
+                        <?php endif; ?>
+                        <?php if ( $license_info['last_check'] ) : ?>
+                            <p>
+                                <strong><?php esc_html_e( 'Last Verified:', 'affilync-woocommerce' ); ?></strong>
+                                <?php echo esc_html( $license_info['last_check'] ); ?>
+                            </p>
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <?php if ( $status === 'valid' || $status === 'grace_period' ) : ?>
+                <div class="affilync-license-actions">
+                    <button type="button" class="button affilync-check-license">
+                        <?php esc_html_e( 'Verify License', 'affilync-woocommerce' ); ?>
+                    </button>
+                    <button type="button" class="button affilync-deactivate-license">
+                        <?php esc_html_e( 'Deactivate License', 'affilync-woocommerce' ); ?>
+                    </button>
+                </div>
+            <?php else : ?>
+                <div class="affilync-license-activation">
+                    <h3><?php esc_html_e( 'Activate License', 'affilync-woocommerce' ); ?></h3>
+                    <p class="description">
+                        <?php esc_html_e( 'Enter your license key to activate Affilync for this site.', 'affilync-woocommerce' ); ?>
+                    </p>
+                    <div class="license-input-group">
+                        <input type="text"
+                               id="affilync-license-key"
+                               class="regular-text"
+                               placeholder="AFFILYNC-XXXX-XXXX-XXXX-XXXX"
+                               pattern="AFFILYNC-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}" />
+                        <button type="button" class="button button-primary affilync-activate-license">
+                            <?php esc_html_e( 'Activate', 'affilync-woocommerce' ); ?>
+                        </button>
+                    </div>
+                    <p class="description">
+                        <?php
+                        echo wp_kses(
+                            sprintf(
+                                /* translators: %s: URL to purchase page */
+                                __( 'Don\'t have a license? <a href="%s" target="_blank">Purchase one here</a>.', 'affilync-woocommerce' ),
+                                'https://affilync.com/pricing'
+                            ),
+                            array( 'a' => array( 'href' => array(), 'target' => array() ) )
+                        );
+                        ?>
+                    </p>
+                </div>
+            <?php endif; ?>
+
+            <div class="affilync-license-info-box">
+                <h3><?php esc_html_e( 'About Licensing', 'affilync-woocommerce' ); ?></h3>
+                <ul>
+                    <li><?php esc_html_e( 'Each license is valid for one site.', 'affilync-woocommerce' ); ?></li>
+                    <li><?php esc_html_e( 'Licenses are verified daily to ensure validity.', 'affilync-woocommerce' ); ?></li>
+                    <li><?php esc_html_e( 'If verification fails, a 3-day grace period allows continued use while connection issues are resolved.', 'affilync-woocommerce' ); ?></li>
+                    <li><?php esc_html_e( 'Deactivating a license allows you to use it on another site.', 'affilync-woocommerce' ); ?></li>
+                </ul>
+            </div>
+        </div>
+
+        <style>
+            .affilync-license-section { max-width: 800px; }
+            .affilync-license-status-card {
+                background: #fff;
+                border: 1px solid #c3c4c7;
+                border-left-width: 4px;
+                padding: 20px;
+                margin: 20px 0;
+            }
+            .affilync-license-status-card.status-valid { border-left-color: #00a32a; }
+            .affilync-license-status-card.status-grace { border-left-color: #dba617; }
+            .affilync-license-status-card.status-invalid,
+            .affilync-license-status-card.status-expired,
+            .affilync-license-status-card.status-suspended { border-left-color: #d63638; }
+            .affilync-license-status-card.status-unchecked { border-left-color: #72aee6; }
+            .license-status-header {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 16px;
+                font-weight: 600;
+                margin-bottom: 15px;
+            }
+            .status-indicator {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+            }
+            .status-valid .status-indicator { background: #00a32a; }
+            .status-grace .status-indicator { background: #dba617; }
+            .status-invalid .status-indicator,
+            .status-expired .status-indicator,
+            .status-suspended .status-indicator { background: #d63638; }
+            .status-unchecked .status-indicator { background: #72aee6; }
+            .license-details p { margin: 8px 0; }
+            .license-details code { padding: 2px 6px; background: #f0f0f1; }
+            .affilync-license-actions { margin: 20px 0; }
+            .affilync-license-actions .button { margin-right: 10px; }
+            .license-input-group {
+                display: flex;
+                gap: 10px;
+                margin: 15px 0;
+            }
+            .license-input-group input { width: 350px; }
+            .affilync-license-info-box {
+                background: #f6f7f7;
+                border: 1px solid #c3c4c7;
+                padding: 15px 20px;
+                margin-top: 30px;
+            }
+            .affilync-license-info-box h3 { margin-top: 0; }
+            .affilync-license-info-box ul { margin: 0; padding-left: 20px; }
+            .affilync-license-info-box li { margin: 8px 0; }
+        </style>
+        <?php
+    }
+
+    /**
+     * Get CSS class for license status.
+     *
+     * @param string $status License status.
+     * @return string CSS class.
+     */
+    private function get_license_status_class( $status ) {
+        $classes = array(
+            'valid'       => 'status-valid',
+            'grace_period' => 'status-grace',
+            'invalid'     => 'status-invalid',
+            'expired'     => 'status-expired',
+            'suspended'   => 'status-suspended',
+            'unchecked'   => 'status-unchecked',
+        );
+
+        return isset( $classes[ $status ] ) ? $classes[ $status ] : 'status-unchecked';
+    }
+
+    /**
+     * Get human-readable label for license status.
+     *
+     * @param string $status License status.
+     * @return string Status label.
+     */
+    private function get_license_status_label( $status ) {
+        $labels = array(
+            'valid'        => __( 'License Active', 'affilync-woocommerce' ),
+            'grace_period' => __( 'License Active (Verification Pending)', 'affilync-woocommerce' ),
+            'invalid'      => __( 'License Invalid', 'affilync-woocommerce' ),
+            'expired'      => __( 'License Expired', 'affilync-woocommerce' ),
+            'suspended'    => __( 'License Suspended', 'affilync-woocommerce' ),
+            'unchecked'    => __( 'No License Activated', 'affilync-woocommerce' ),
+        );
+
+        return isset( $labels[ $status ] ) ? $labels[ $status ] : __( 'Unknown Status', 'affilync-woocommerce' );
+    }
+
+    /**
+     * AJAX handler for license activation.
+     */
+    public function ajax_activate_license() {
+        check_ajax_referer( 'wp_rest', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'affilync-woocommerce' ) ) );
+        }
+
+        $license_key = isset( $_POST['license_key'] ) ? sanitize_text_field( wp_unslash( $_POST['license_key'] ) ) : '';
+
+        if ( empty( $license_key ) ) {
+            wp_send_json_error( array( 'message' => __( 'Please enter a license key.', 'affilync-woocommerce' ) ) );
+        }
+
+        $license_manager = affilync()->license_manager;
+        if ( ! $license_manager ) {
+            wp_send_json_error( array( 'message' => __( 'License manager not available.', 'affilync-woocommerce' ) ) );
+        }
+
+        $result = $license_manager->activate( $license_key );
+
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+        }
+
+        wp_send_json_success( $result );
+    }
+
+    /**
+     * AJAX handler for license deactivation.
+     */
+    public function ajax_deactivate_license() {
+        check_ajax_referer( 'wp_rest', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'affilync-woocommerce' ) ) );
+        }
+
+        $license_manager = affilync()->license_manager;
+        if ( ! $license_manager ) {
+            wp_send_json_error( array( 'message' => __( 'License manager not available.', 'affilync-woocommerce' ) ) );
+        }
+
+        $result = $license_manager->deactivate();
+
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+        }
+
+        wp_send_json_success( $result );
+    }
+
+    /**
+     * AJAX handler for license check.
+     */
+    public function ajax_check_license() {
+        check_ajax_referer( 'wp_rest', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'affilync-woocommerce' ) ) );
+        }
+
+        $license_manager = affilync()->license_manager;
+        if ( ! $license_manager ) {
+            wp_send_json_error( array( 'message' => __( 'License manager not available.', 'affilync-woocommerce' ) ) );
+        }
+
+        // Force revalidation.
+        $license_manager->revalidate_license();
+
+        wp_send_json_success( array(
+            'message' => __( 'License verified.', 'affilync-woocommerce' ),
+            'data'    => $license_manager->get_license_info(),
+        ) );
     }
 }

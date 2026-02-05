@@ -79,6 +79,13 @@ class Affilync_Security_Encryption {
     private $derived_key = null;
 
     /**
+     * Whether insecure key storage is being used.
+     *
+     * @var bool
+     */
+    private $using_insecure_storage = false;
+
+    /**
      * Constructor.
      */
     public function __construct() {
@@ -90,37 +97,141 @@ class Affilync_Security_Encryption {
                 E_USER_WARNING
             );
         }
+
+        // Check key security on admin pages.
+        if ( is_admin() ) {
+            add_action( 'admin_notices', array( $this, 'display_insecure_key_warning' ) );
+        }
+    }
+
+    /**
+     * Display warning if using insecure key storage.
+     */
+    public function display_insecure_key_warning() {
+        // Only show on Affilync pages.
+        $screen = get_current_screen();
+        if ( ! $screen || strpos( $screen->id, 'affilync' ) === false ) {
+            return;
+        }
+
+        // Check if insecure storage is being used.
+        if ( ! $this->is_key_secure() ) {
+            ?>
+            <div class="notice notice-error">
+                <p>
+                    <strong><?php esc_html_e( 'Affilync Security Warning:', 'affilync-woocommerce' ); ?></strong>
+                    <?php
+                    echo wp_kses(
+                        sprintf(
+                            /* translators: %s: Code example */
+                            __( 'Your encryption key is stored insecurely in the database. For production use, add this to your wp-config.php: %s', 'affilync-woocommerce' ),
+                            "<code>define( 'AFFILYNC_ENCRYPTION_KEY', '" . esc_html( wp_generate_password( 64, true, true ) ) . "' );</code>"
+                        ),
+                        array( 'code' => array() )
+                    );
+                    ?>
+                </p>
+            </div>
+            <?php
+        }
+    }
+
+    /**
+     * Check if the encryption key is stored securely.
+     *
+     * @return bool True if using secure key storage.
+     */
+    public function is_key_secure() {
+        // Secure if AFFILYNC_ENCRYPTION_KEY is defined.
+        if ( defined( 'AFFILYNC_ENCRYPTION_KEY' ) && AFFILYNC_ENCRYPTION_KEY ) {
+            return true;
+        }
+
+        // Acceptable if SECURE_AUTH_KEY is strong enough.
+        if ( defined( 'SECURE_AUTH_KEY' ) && SECURE_AUTH_KEY && strlen( SECURE_AUTH_KEY ) >= 64 ) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
      * Get the master encryption key.
      *
      * Priority:
-     * 1. AFFILYNC_ENCRYPTION_KEY constant
-     * 2. SECURE_AUTH_KEY WordPress constant
-     * 3. Generate and store a new key
+     * 1. AFFILYNC_ENCRYPTION_KEY constant (most secure)
+     * 2. SECURE_AUTH_KEY WordPress constant (acceptable)
+     * 3. Generate and store a new key (insecure - database storage)
+     *
+     * In production mode (AFFILYNC_PRODUCTION_MODE), database fallback is disabled.
      *
      * @return string Master key.
+     * @throws Exception If production mode is enabled and no secure key is configured.
      */
     private function get_master_key() {
-        // First, check for dedicated Affilync encryption key.
+        // First, check for dedicated Affilync encryption key (most secure).
         if ( defined( 'AFFILYNC_ENCRYPTION_KEY' ) && AFFILYNC_ENCRYPTION_KEY ) {
+            $this->using_insecure_storage = false;
             return AFFILYNC_ENCRYPTION_KEY;
         }
 
-        // Fall back to WordPress SECURE_AUTH_KEY.
+        // Fall back to WordPress SECURE_AUTH_KEY (acceptable for most cases).
         if ( defined( 'SECURE_AUTH_KEY' ) && SECURE_AUTH_KEY && strlen( SECURE_AUTH_KEY ) >= 32 ) {
+            // Mark as insecure if key is weak.
+            $this->using_insecure_storage = strlen( SECURE_AUTH_KEY ) < 64;
             return SECURE_AUTH_KEY;
         }
 
-        // Generate and store a key if none exists.
+        // Production mode enforcement - do not allow database fallback.
+        if ( defined( 'AFFILYNC_PRODUCTION_MODE' ) && AFFILYNC_PRODUCTION_MODE ) {
+            // Log critical security error.
+            if ( class_exists( 'Affilync_Security_Audit_Logger' ) ) {
+                $logger = new Affilync_Security_Audit_Logger();
+                $logger->critical(
+                    'encryption_key_missing',
+                    array( 'message' => 'Production mode requires AFFILYNC_ENCRYPTION_KEY constant' )
+                );
+            }
+
+            // Return empty key - encryption will fail, which is safer than insecure storage.
+            wp_die(
+                esc_html__( 'Affilync: Production mode requires AFFILYNC_ENCRYPTION_KEY to be defined in wp-config.php', 'affilync-woocommerce' ),
+                esc_html__( 'Configuration Error', 'affilync-woocommerce' ),
+                array( 'response' => 500 )
+            );
+        }
+
+        // Generate and store a key if none exists (development/testing only).
+        $this->using_insecure_storage = true;
         $stored_key = get_option( 'affilync_encryption_key' );
         if ( ! $stored_key ) {
             $stored_key = wp_generate_password( 64, true, true );
             update_option( 'affilync_encryption_key', $stored_key, false );
+
+            // Log warning about insecure key storage.
+            if ( class_exists( 'Affilync_Security_Audit_Logger' ) ) {
+                $logger = new Affilync_Security_Audit_Logger();
+                $logger->warning(
+                    'encryption_key_insecure',
+                    array( 'message' => 'Encryption key stored in database. Define AFFILYNC_ENCRYPTION_KEY for production.' )
+                );
+            }
         }
 
         return $stored_key;
+    }
+
+    /**
+     * Check if using insecure key storage.
+     *
+     * @return bool True if using database-stored key.
+     */
+    public function is_using_insecure_storage() {
+        // Initialize key check if not done.
+        if ( $this->derived_key === null ) {
+            $this->derive_key();
+        }
+        return $this->using_insecure_storage;
     }
 
     /**

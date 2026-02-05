@@ -1,0 +1,265 @@
+AFFILYNC WOOCOMMERCE PLUGIN
+END USER LICENSE AGREEMENT
+
+Version 1.0
+Effective Date: January 1, 2024
+Last Updated: February 4, 2026
+
+IMPORTANT: PLEASE READ THIS LICENSE AGREEMENT CAREFULLY BEFORE INSTALLING,
+COPYING, OR USING THIS SOFTWARE.
+
+================================================================================
+1. DEFINITIONS
+================================================================================
+
+"Agreement" means this End User License Agreement.
+
+"Licensor" means Affilync, a Delaware corporation, and its successors and assigns.
+
+"Licensee" or "You" means the individual or legal entity that has purchased a
+license to use the Software.
+
+"Software" means the Affilync WooCommerce Plugin, including all files, libraries,
+documentation, updates, and modifications provided by Licensor.
+
+"License Key" means the unique alphanumeric code provided by Licensor that
+enables the Software to function.
+
+"Authorized Domain" means the single WordPress installation domain registered
+and activated with your License Key.
+
+"Commercial Use" means any use of the Software in connection with a business,
+trade, or for profit-making purposes.
+
+================================================================================
+2. LICENSE GRANT
+================================================================================
+
+2.1 Subject to the terms and conditions of this Agreement and payment of
+applicable license fees, Licensor grants Licensee a limited, non-exclusive,
+non-transferable, revocable license to:
+
+    (a) Install and use one copy of the Software on a single WordPress
+        installation at the Authorized Domain;
+
+    (b) Make one backup copy of the Software solely for archival purposes;
+
+    (c) Use the Software for Commercial Use in connection with operating
+        an affiliate marketing program through the Licensor's platform.
+
+2.2 The license granted herein is effective from the date of License Key
+activation until terminated in accordance with Section 8.
+
+================================================================================
+3. LICENSE RESTRICTIONS
+================================================================================
+
+3.1 Licensee shall NOT:
+
+    (a) Copy, reproduce, or duplicate the Software except as expressly
+        permitted in Section 2.1(b);
+
+    (b) Modify, adapt, alter, translate, or create derivative works based
+        on the Software;
+
+    (c) Reverse engineer, disassemble, decompile, decode, or otherwise
+        attempt to derive or gain access to the source code of the Software;
+
+    (d) Rent, lease, lend, sell, sublicense, assign, distribute, publish,
+        transfer, or otherwise make available the Software or any features
+        or functionality thereof to any third party;
+
+    (e) Remove, alter, or obscure any proprietary notices, labels, or marks
+        on or in the Software;
+
+    (f) Use the Software to develop a competing product or service;
+
+    (g) Use the Software on more than one WordPress installation without
+        purchasing additional licenses;
+
+    (h) Share, publish, or disclose License Keys to third parties;
+
+    (i) Circumvent, disable, or interfere with any licensing, security, or
+        integrity verification mechanisms in the Software;
+
+    (j) Use the Software in any manner that violates applicable laws or
+        regulations.
+
+3.2 The Software contains security measures designed to prevent unauthorized
+use. Any attempt to circumvent these measures is a material breach of this
+Agreement and may result in civil and criminal liability.
+
+================================================================================
+4. INTELLECTUAL PROPERTY
+================================================================================
+
+4.1 The Software and all copies thereof are proprietary to Licensor and title
+thereto remains exclusively with Licensor. All applicable rights to patents,
+copyrights, trademarks, trade secrets, and other intellectual property rights
+in the Software belong exclusively to Licensor.
+
+4.2 Licensee acknowledges that the Software contains valuable trade secrets
+and proprietary information of Licensor, and agrees to maintain the
+confidentiality thereof.
+
+4.3 This Agreement does not grant Licensee any rights to trademarks or
+service marks of Licensor.
+
+================================================================================
+5. LICENSE VERIFICATION AND CONNECTIVITY
+================================================================================
+
+5.1 The Software requires periodic online verification of the License Key to
+ensure compliance with this Agreement. Licensee agrees to:
+
+    (a) Maintain internet connectivity sufficient to allow License Key
+        verification;
+
+    (b) Allow the Software to communicate with Licensor's servers for
+        verification purposes;
+
+    (c) Keep License Key information current and accurate.
+
+5.2 If the Software cannot verify the License Key due to network issues,
+a grace period of three (3) days is provided before functionality is
+disabled.
+
+5.3 The Software may collect non-personal usage data to improve the service.
+No personally identifiable information is collected without consent.
+
+================================================================================
+6. SUPPORT AND UPDATES
+================================================================================
+
+6.1 Technical support and software updates are provided according to the
+terms of Licensee's subscription plan.
+
+6.2 Licensor may release updates, patches, or new versions of the Software.
+Licensee is entitled to updates during the active subscription period.
+
+6.3 Licensor is not obligated to provide support for modified or altered
+versions of the Software.
+
+================================================================================
+7. WARRANTY DISCLAIMER
+================================================================================
+
+7.1 THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+7.2 LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED,
+ERROR-FREE, OR COMPLETELY SECURE. LICENSEE ASSUMES ALL RESPONSIBILITY FOR
+SELECTING THE SOFTWARE TO ACHIEVE INTENDED RESULTS AND FOR THE INSTALLATION,
+USE, AND RESULTS OBTAINED FROM THE SOFTWARE.
+
+7.3 Some jurisdictions do not allow the exclusion of implied warranties, so
+the above exclusion may not apply to you. In such case, Licensor's liability
+shall be limited to the maximum extent permitted by applicable law.
+
+================================================================================
+8. LIMITATION OF LIABILITY
+================================================================================
+
+8.1 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL,
+PUNITIVE, OR EXEMPLARY DAMAGES, INCLUDING BUT NOT LIMITED TO DAMAGES FOR
+LOSS OF PROFITS, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, EVEN IF
+LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+8.2 LICENSOR'S TOTAL CUMULATIVE LIABILITY UNDER THIS AGREEMENT SHALL NOT
+EXCEED THE AMOUNT PAID BY LICENSEE FOR THE SOFTWARE LICENSE IN THE TWELVE
+(12) MONTHS PRECEDING THE CLAIM.
+
+8.3 The limitations in this Section 8 shall apply notwithstanding any
+failure of essential purpose of any limited remedy.
+
+================================================================================
+9. TERM AND TERMINATION
+================================================================================
+
+9.1 This Agreement is effective until terminated. Licensee may terminate at
+any time by deactivating the License Key and destroying all copies of the
+Software.
+
+9.2 This Agreement will terminate automatically if Licensee fails to comply
+with any term or condition. Upon termination:
+
+    (a) All rights granted under this Agreement immediately cease;
+
+    (b) Licensee must immediately cease using the Software;
+
+    (c) Licensee must destroy all copies of the Software in their possession;
+
+    (d) Sections 3, 4, 7, 8, 10, and 11 survive termination.
+
+9.3 Licensor may terminate this Agreement immediately upon notice if Licensee
+breaches any material term, including license restrictions in Section 3.
+
+================================================================================
+10. GOVERNING LAW AND DISPUTE RESOLUTION
+================================================================================
+
+10.1 This Agreement shall be governed by and construed in accordance with the
+laws of the State of Delaware, USA, without regard to its conflict of law
+provisions.
+
+10.2 Any dispute arising out of or relating to this Agreement shall be
+resolved through binding arbitration in accordance with the rules of the
+American Arbitration Association, with arbitration to take place in
+Wilmington, Delaware.
+
+10.3 Notwithstanding the foregoing, Licensor may seek injunctive or other
+equitable relief in any court of competent jurisdiction to protect its
+intellectual property rights.
+
+================================================================================
+11. GENERAL PROVISIONS
+================================================================================
+
+11.1 Entire Agreement. This Agreement constitutes the entire agreement
+between the parties and supersedes all prior negotiations, representations,
+or agreements relating to the Software.
+
+11.2 Amendment. This Agreement may only be amended by a written document
+signed by both parties or by Licensor publishing updated terms.
+
+11.3 Waiver. No failure or delay in exercising any right shall constitute a
+waiver of that right.
+
+11.4 Severability. If any provision is held invalid or unenforceable, the
+remaining provisions shall remain in full force and effect.
+
+11.5 Assignment. Licensee may not assign this Agreement without Licensor's
+prior written consent. Licensor may assign this Agreement freely.
+
+11.6 Export Compliance. Licensee agrees to comply with all applicable export
+laws and regulations.
+
+11.7 U.S. Government End Users. The Software is "commercial computer
+software" as defined in FAR 2.101. Government users acquire the Software
+with only those rights set forth herein.
+
+================================================================================
+12. CONTACT INFORMATION
+================================================================================
+
+For questions about this Agreement:
+
+Affilync
+Licensing Department
+Email: licensing@affilync.com
+Website: https://affilync.com
+
+For technical support:
+Email: support@affilync.com
+Documentation: https://docs.affilync.com
+
+================================================================================
+
+BY INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE, YOU ACKNOWLEDGE
+THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THE TERMS AND
+CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO THESE TERMS, DO NOT
+INSTALL OR USE THE SOFTWARE.
+
+Copyright (c) 2024-2026 Affilync. All Rights Reserved.

@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "Affilync WooCommerce Plugin Build Configuration",
+  "version": "1.0.0",
+  "description": "Configuration for building and encoding the Affilync WooCommerce plugin",
+
+  "encoding": {
+    "provider": "ioncube",
+    "minimum_loader_version": "10.0",
+    "php_target_versions": ["7.4", "8.0", "8.1", "8.2"],
+    "obfuscation_level": "maximum",
+
+    "features": {
+      "obfuscate_function_names": true,
+      "obfuscate_class_names": true,
+      "obfuscate_constant_names": true,
+      "obfuscate_property_names": true,
+      "encrypt_all_strings": true,
+      "obfuscate_control_flow": true,
+      "add_opaque_predicates": true,
+      "remove_comments": true,
+      "remove_phpdoc": true
+    },
+
+    "license_validation": {
+      "enabled": true,
+      "server_url": "https://api.affilync.com/api/woocommerce/licenses",
+      "callback_interval_seconds": 86400,
+      "grace_period_days": 3,
+      "enforce_domain_binding": true
+    }
+  },
+
+  "files": {
+    "encode": [
+      "affilync-woocommerce.php",
+      "includes/**/*.php"
+    ],
+    "exclude_from_encoding": [
+      "uninstall.php",
+      "**/index.php"
+    ],
+    "copy_unencoded": [
+      "assets/**/*",
+      "languages/**/*",
+      "templates/**/*",
+      "readme.txt",
+      "uninstall.php"
+    ],
+    "exclude_from_package": [
+      ".git/**",
+      ".gitignore",
+      "tests/**",
+      "phpunit.xml",
+      "composer.lock",
+      "node_modules/**",
+      "build/**",
+      ".DS_Store",
+      "*.log",
+      "*.md",
+      "!INSTALLATION.md"
+    ]
+  },
+
+  "licensing": {
+    "plans": [
+      {
+        "id": "free",
+        "name": "Free",
+        "price": 0,
+        "currency": "USD",
+        "features": ["basic_tracking", "product_sync"],
+        "limits": {
+          "conversions_per_month": 50,
+          "products": 100
+        }
+      },
+      {
+        "id": "starter",
+        "name": "Starter",
+        "price": 29,
+        "currency": "USD",
+        "billing_period": "month",
+        "features": ["basic_tracking", "product_sync", "analytics", "email_support"],
+        "limits": {
+          "conversions_per_month": 500,
+          "products": 1000
+        }
+      },
+      {
+        "id": "pro",
+        "name": "Pro",
+        "price": 99,
+        "currency": "USD",
+        "billing_period": "month",
+        "features": ["basic_tracking", "product_sync", "analytics", "advanced_analytics", "priority_support", "api_access"],
+        "limits": {
+          "conversions_per_month": 5000,
+          "products": 10000
+        }
+      },
+      {
+        "id": "enterprise",
+        "name": "Enterprise",
+        "price": 299,
+        "currency": "USD",
+        "billing_period": "month",
+        "features": ["basic_tracking", "product_sync", "analytics", "advanced_analytics", "dedicated_support", "api_access", "white_label", "custom_integration"],
+        "limits": {
+          "conversions_per_month": -1,
+          "products": -1
+        }
+      }
+    ],
+
+    "key_format": "AFFILYNC-XXXX-XXXX-XXXX-XXXX",
+    "key_characters": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+  },
+
+  "security": {
+    "integrity_check": {
+      "enabled": true,
+      "verify_api_urls": true,
+      "verify_constants": true,
+      "verify_file_hashes": true,
+      "report_violations": true,
+      "block_on_violation_in_production": true
+    },
+
+    "anti_tampering": {
+      "detect_debugger": true,
+      "detect_decompiler": true,
+      "detect_suspicious_tools": true
+    },
+
+    "api_protection": {
+      "enforce_https": true,
+      "hardcoded_api_url": "https://api.affilync.com",
+      "hardcoded_app_url": "https://app.affilync.com",
+      "prevent_url_override": true
+    }
+  },
+
+  "distribution": {
+    "output_format": "zip",
+    "include_checksums": true,
+    "checksum_algorithm": "sha256",
+    "versioning": "semver",
+
+    "package_naming": "{name}-v{version}.zip",
+
+    "files_included": [
+      "affilync-woocommerce.php (encoded)",
+      "includes/ (encoded)",
+      "assets/",
+      "languages/",
+      "templates/",
+      "readme.txt",
+      "uninstall.php",
+      "LICENSE.txt",
+      "INSTALLATION.md"
+    ]
+  },
+
+  "customer_requirements": {
+    "php": ">=7.4",
+    "wordpress": ">=5.8",
+    "woocommerce": ">=5.0",
+    "ioncube_loader": ">=10.0",
+    "outbound_https": true,
+    "cron": true
+  }
+}

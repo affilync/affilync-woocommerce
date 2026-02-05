@@ -83,6 +83,16 @@ class Affilync_API_OAuth {
      * @return string|WP_Error Authorization URL or error.
      */
     public function get_authorization_url() {
+        // Verify client ID is configured.
+        try {
+            $client_id = $this->get_client_id();
+        } catch ( Exception $e ) {
+            return new WP_Error(
+                'client_id_missing',
+                $e->getMessage()
+            );
+        }
+
         // Generate PKCE code verifier.
         $code_verifier = $this->generate_code_verifier();
 
@@ -109,7 +119,7 @@ class Affilync_API_OAuth {
         // Build authorization URL.
         $api_url = $this->api_client->get_api_url();
         $params  = array(
-            'client_id'             => $this->get_client_id(),
+            'client_id'             => $client_id,
             'redirect_uri'          => $this->get_redirect_uri(),
             'response_type'         => 'code',
             'scope'                 => implode( ' ', $this->scopes ),
@@ -223,6 +233,13 @@ class Affilync_API_OAuth {
      * @return array|WP_Error Token data or error.
      */
     private function exchange_code_for_token( $code, $code_verifier ) {
+        // Get client ID (may throw exception).
+        try {
+            $client_id = $this->get_client_id();
+        } catch ( Exception $e ) {
+            return new WP_Error( 'client_id_missing', $e->getMessage() );
+        }
+
         $api_url = $this->api_client->get_api_url();
 
         $response = wp_remote_post(
@@ -238,7 +255,7 @@ class Affilync_API_OAuth {
                         'grant_type'    => 'authorization_code',
                         'code'          => $code,
                         'redirect_uri'  => $this->get_redirect_uri(),
-                        'client_id'     => $this->get_client_id(),
+                        'client_id'     => $client_id,
                         'code_verifier' => $code_verifier,
                     )
                 ),
@@ -299,13 +316,52 @@ class Affilync_API_OAuth {
     /**
      * Get client ID.
      *
+     * Client ID must be configured via AFFILYNC_CLIENT_ID constant or license activation.
+     * No default fallback is provided for security reasons.
+     *
      * @return string Client ID.
+     * @throws Exception If client ID is not configured.
      */
     private function get_client_id() {
-        if ( defined( 'AFFILYNC_CLIENT_ID' ) ) {
+        // Check for constant-defined client ID (highest priority).
+        if ( defined( 'AFFILYNC_CLIENT_ID' ) && AFFILYNC_CLIENT_ID ) {
             return AFFILYNC_CLIENT_ID;
         }
-        return get_option( 'affilync_client_id', 'woocommerce_plugin' );
+
+        // Check for license-activated client ID.
+        $license_client_id = get_option( 'affilync_license_client_id' );
+        if ( ! empty( $license_client_id ) ) {
+            return $license_client_id;
+        }
+
+        // No default fallback - require explicit configuration.
+        // Log security event.
+        if ( class_exists( 'Affilync_Security_Audit_Logger' ) ) {
+            $logger = new Affilync_Security_Audit_Logger();
+            $logger->error(
+                'client_id_missing',
+                array( 'message' => 'OAuth attempted without configured client ID' )
+            );
+        }
+
+        // Throw error - this should be caught by the authorization flow.
+        throw new Exception(
+            __( 'Client ID not configured. Please activate your license or define AFFILYNC_CLIENT_ID.', 'affilync-woocommerce' )
+        );
+    }
+
+    /**
+     * Check if client ID is properly configured.
+     *
+     * @return bool True if client ID is available.
+     */
+    public function has_client_id() {
+        if ( defined( 'AFFILYNC_CLIENT_ID' ) && AFFILYNC_CLIENT_ID ) {
+            return true;
+        }
+
+        $license_client_id = get_option( 'affilync_license_client_id' );
+        return ! empty( $license_client_id );
     }
 
     /**

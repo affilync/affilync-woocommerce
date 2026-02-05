@@ -31,6 +31,11 @@
 
             // Sync conversions button
             $(document).on('click', '.affilync-sync-conversions', this.handleSyncConversions.bind(this));
+
+            // License management buttons
+            $(document).on('click', '.affilync-activate-license', this.handleActivateLicense.bind(this));
+            $(document).on('click', '.affilync-deactivate-license', this.handleDeactivateLicense.bind(this));
+            $(document).on('click', '.affilync-check-license', this.handleCheckLicense.bind(this));
         },
 
         /**
@@ -190,6 +195,124 @@
                 .always(function() {
                     $button.text(originalText).prop('disabled', false);
                 });
+        },
+
+        /**
+         * Handle activate license button click
+         */
+        handleActivateLicense: function(e) {
+            e.preventDefault();
+
+            const $button = $(e.currentTarget);
+            const $input = $('#affilync-license-key');
+            const licenseKey = $input.val().trim();
+
+            if (!licenseKey) {
+                AffilyncAdmin.showNotice('error', affilyncAdmin.i18n.enterLicenseKey || 'Please enter a license key');
+                $input.focus();
+                return;
+            }
+
+            const originalText = $button.text();
+            $button.text(affilyncAdmin.i18n.activating || 'Activating...').prop('disabled', true);
+
+            this.ajaxRequest('affilync_activate_license', { license_key: licenseKey })
+                .done(function(response) {
+                    if (response.success) {
+                        AffilyncAdmin.showNotice('success', response.data.message || 'License activated successfully');
+                        setTimeout(function() {
+                            window.location.reload();
+                        }, 1500);
+                    } else {
+                        AffilyncAdmin.showNotice('error', response.data.message || 'License activation failed');
+                        $button.text(originalText).prop('disabled', false);
+                    }
+                })
+                .fail(function(xhr) {
+                    const message = xhr.responseJSON?.data?.message || 'License activation failed';
+                    AffilyncAdmin.showNotice('error', message);
+                    $button.text(originalText).prop('disabled', false);
+                });
+        },
+
+        /**
+         * Handle deactivate license button click
+         */
+        handleDeactivateLicense: function(e) {
+            e.preventDefault();
+
+            if (!confirm(affilyncAdmin.i18n.confirmDeactivate || 'Are you sure you want to deactivate this license?')) {
+                return;
+            }
+
+            const $button = $(e.currentTarget);
+            const originalText = $button.text();
+
+            $button.text(affilyncAdmin.i18n.deactivating || 'Deactivating...').prop('disabled', true);
+
+            this.ajaxRequest('affilync_deactivate_license')
+                .done(function(response) {
+                    if (response.success) {
+                        AffilyncAdmin.showNotice('success', response.data.message || 'License deactivated');
+                        setTimeout(function() {
+                            window.location.reload();
+                        }, 1500);
+                    } else {
+                        AffilyncAdmin.showNotice('error', response.data.message || 'Deactivation failed');
+                        $button.text(originalText).prop('disabled', false);
+                    }
+                })
+                .fail(function(xhr) {
+                    const message = xhr.responseJSON?.data?.message || 'Deactivation failed';
+                    AffilyncAdmin.showNotice('error', message);
+                    $button.text(originalText).prop('disabled', false);
+                });
+        },
+
+        /**
+         * Handle check license button click
+         */
+        handleCheckLicense: function(e) {
+            e.preventDefault();
+
+            const $button = $(e.currentTarget);
+            const originalText = $button.text();
+
+            $button.text(affilyncAdmin.i18n.checking || 'Checking...').prop('disabled', true);
+
+            this.ajaxRequest('affilync_check_license')
+                .done(function(response) {
+                    if (response.success) {
+                        AffilyncAdmin.showNotice('success', response.data.message || 'License verified');
+                        setTimeout(function() {
+                            window.location.reload();
+                        }, 1500);
+                    } else {
+                        AffilyncAdmin.showNotice('error', response.data.message || 'License verification failed');
+                        $button.text(originalText).prop('disabled', false);
+                    }
+                })
+                .fail(function(xhr) {
+                    const message = xhr.responseJSON?.data?.message || 'License check failed';
+                    AffilyncAdmin.showNotice('error', message);
+                    $button.text(originalText).prop('disabled', false);
+                });
+        },
+
+        /**
+         * Make WordPress AJAX request
+         */
+        ajaxRequest: function(action, data) {
+            const requestData = $.extend({
+                action: action,
+                nonce: affilyncAdmin.nonce
+            }, data || {});
+
+            return $.ajax({
+                url: affilyncAdmin.ajaxUrl,
+                method: 'POST',
+                data: requestData
+            });
         },
 
         /**

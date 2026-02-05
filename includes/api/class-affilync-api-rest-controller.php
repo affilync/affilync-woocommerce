@@ -279,9 +279,19 @@ class Affilync_API_REST_Controller {
      * Disconnect OAuth.
      *
      * @param WP_REST_Request $request Request object.
-     * @return WP_REST_Response Response.
+     * @return WP_REST_Response|WP_Error Response.
      */
     public function oauth_disconnect( $request ) {
+        // Check rate limit.
+        $rate_check = $this->rate_limiter->check( 'oauth_disconnect' );
+        if ( ! $rate_check['allowed'] ) {
+            return new WP_Error(
+                'rate_limited',
+                __( 'Too many disconnect attempts. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
         $oauth = new Affilync_API_OAuth(
             $this->nonce_manager,
             affilync()->encryption,
@@ -327,9 +337,19 @@ class Affilync_API_REST_Controller {
      * Get conversions.
      *
      * @param WP_REST_Request $request Request object.
-     * @return WP_REST_Response Response.
+     * @return WP_REST_Response|WP_Error Response.
      */
     public function get_conversions( $request ) {
+        // Check rate limit.
+        $rate_check = $this->rate_limiter->check( 'conversions_read' );
+        if ( ! $rate_check['allowed'] ) {
+            return new WP_Error(
+                'rate_limited',
+                __( 'Too many requests. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
         global $wpdb;
 
         $page   = $request->get_param( 'page' );
@@ -391,6 +411,16 @@ class Affilync_API_REST_Controller {
      * @return WP_REST_Response|WP_Error Response.
      */
     public function sync_conversions( $request ) {
+        // Check rate limit (stricter - this is resource intensive).
+        $rate_check = $this->rate_limiter->check( 'conversions_sync' );
+        if ( ! $rate_check['allowed'] ) {
+            return new WP_Error(
+                'rate_limited',
+                __( 'Sync in progress or too many recent attempts. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
         $tracker = affilync()->conversion_tracker;
         $result = $tracker->sync_pending_conversions();
 
@@ -490,9 +520,19 @@ class Affilync_API_REST_Controller {
      * Get settings.
      *
      * @param WP_REST_Request $request Request object.
-     * @return WP_REST_Response Response.
+     * @return WP_REST_Response|WP_Error Response.
      */
     public function get_settings( $request ) {
+        // Check rate limit.
+        $rate_check = $this->rate_limiter->check( 'settings_read' );
+        if ( ! $rate_check['allowed'] ) {
+            return new WP_Error(
+                'rate_limited',
+                __( 'Too many requests. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
         $settings = get_option( 'affilync_settings', array() );
 
         $defaults = array(
@@ -517,6 +557,16 @@ class Affilync_API_REST_Controller {
      * @return WP_REST_Response|WP_Error Response.
      */
     public function update_settings( $request ) {
+        // Check rate limit (stricter for writes).
+        $rate_check = $this->rate_limiter->check( 'settings_write' );
+        if ( ! $rate_check['allowed'] ) {
+            return new WP_Error(
+                'rate_limited',
+                __( 'Too many settings updates. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
         $settings = $request->get_json_params();
 
         // Sanitize settings.
