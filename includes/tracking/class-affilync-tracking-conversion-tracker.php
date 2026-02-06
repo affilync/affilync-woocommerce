@@ -95,6 +95,9 @@ class Affilync_Tracking_Conversion_Tracker {
 
         // PAY-III-03: Action Scheduler callback for async conversion sync.
         add_action( 'affilync_async_sync_conversion', array( $this, 'async_sync_conversion_callback' ), 10, 2 );
+
+        // PAY-III-03: Action Scheduler callback for async refund API notification.
+        add_action( 'affilync_async_notify_refund', array( $this, 'async_notify_refund_callback' ), 10, 3 );
     }
 
     /**
@@ -436,6 +439,48 @@ class Affilync_Tracking_Conversion_Tracker {
     }
 
     /**
+     * Action Scheduler callback for async refund API notification.
+     *
+     * PAY-III-03: Called by Action Scheduler in a background process. Sends
+     * the refund notification to the Affilync API without blocking the
+     * WordPress admin request that triggered the refund.
+     *
+     * @param string $api_conversion_id Remote API conversion ID.
+     * @param string $status            Refund status (partial_refund or refunded).
+     * @param int    $order_id          WooCommerce order ID.
+     */
+    public function async_notify_refund_callback( $api_conversion_id, $status, $order_id ) {
+        $result = $this->api_client->post(
+            '/api/conversions/' . $api_conversion_id . '/refund',
+            array(
+                'status'   => $status,
+                'order_id' => $order_id,
+            )
+        );
+
+        if ( is_wp_error( $result ) ) {
+            $this->audit_logger->error(
+                'refund_notification_failed',
+                array(
+                    'api_conversion_id' => $api_conversion_id,
+                    'status'            => $status,
+                    'order_id'          => $order_id,
+                    'error'             => $result->get_error_message(),
+                )
+            );
+        } else {
+            $this->audit_logger->info(
+                'refund_notification_sent',
+                array(
+                    'api_conversion_id' => $api_conversion_id,
+                    'status'            => $status,
+                    'order_id'          => $order_id,
+                )
+            );
+        }
+    }
+
+    /**
      * Get products from order for conversion tracking.
      *
      * @param WC_Order $order Order object.
@@ -504,6 +549,10 @@ class Affilync_Tracking_Conversion_Tracker {
     /**
      * Update conversion status for refund.
      *
+     * PAY-III-03: Updates the local database immediately but defers the API
+     * notification to Action Scheduler so that refund hooks do not block the
+     * admin request for 3-5 seconds waiting on the remote API call.
+     *
      * @param int    $order_id Order ID.
      * @param string $status   New status.
      */
@@ -512,6 +561,7 @@ class Affilync_Tracking_Conversion_Tracker {
 
         $table = $wpdb->prefix . self::TABLE_NAME;
 
+        // Update local status immediately (fast DB write).
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $wpdb->update(
             $table,
@@ -521,7 +571,7 @@ class Affilync_Tracking_Conversion_Tracker {
             array( '%d' )
         );
 
-        // Notify API of refund.
+        // Get the API conversion ID for async notification.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $conversion = $wpdb->get_row(
             $wpdb->prepare(
@@ -530,14 +580,29 @@ class Affilync_Tracking_Conversion_Tracker {
             )
         );
 
+        // PAY-III-03: Schedule async API notification instead of blocking.
         if ( $conversion && $conversion->api_conversion_id ) {
-            $this->api_client->post(
-                '/api/conversions/' . $conversion->api_conversion_id . '/refund',
-                array(
-                    'status' => $status,
-                    'order_id' => $order_id,
-                )
-            );
+            if ( function_exists( 'as_schedule_single_action' ) ) {
+                as_schedule_single_action(
+                    time(),
+                    'affilync_async_notify_refund',
+                    array(
+                        'api_conversion_id' => $conversion->api_conversion_id,
+                        'status'            => $status,
+                        'order_id'          => $order_id,
+                    ),
+                    self::ASYNC_GROUP
+                );
+            } else {
+                // Fallback: Action Scheduler not available, make synchronous call.
+                $this->api_client->post(
+                    '/api/conversions/' . $conversion->api_conversion_id . '/refund',
+                    array(
+                        'status'   => $status,
+                        'order_id' => $order_id,
+                    )
+                );
+            }
         }
     }
 
