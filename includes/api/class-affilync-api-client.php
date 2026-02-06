@@ -56,6 +56,27 @@ class Affilync_API_Client {
     const MAX_RETRIES = 3;
 
     /**
+     * Circuit breaker failure threshold before opening.
+     *
+     * @var int
+     */
+    const CIRCUIT_BREAKER_THRESHOLD = 5;
+
+    /**
+     * Circuit breaker recovery timeout in seconds.
+     *
+     * @var int
+     */
+    const CIRCUIT_BREAKER_TIMEOUT = 60;
+
+    /**
+     * Maximum queued requests when circuit is open.
+     *
+     * @var int
+     */
+    const MAX_QUEUED_REQUESTS = 100;
+
+    /**
      * Constructor.
      *
      * @param Affilync_Security_Encryption   $encryption   Encryption handler.
@@ -122,7 +143,170 @@ class Affilync_API_Client {
     }
 
     /**
+     * ARCH-III-19: Get the current circuit breaker state.
+     *
+     * States:
+     * - 'closed': Normal operation, requests go through.
+     * - 'open': API is down, requests are queued locally.
+     * - 'half_open': Testing if API has recovered.
+     *
+     * @return array Circuit state with keys: state, failure_count, last_failure, opened_at.
+     */
+    private function get_circuit_state() {
+        $state = get_transient( 'affilync_circuit_state' );
+        if ( ! $state || ! is_array( $state ) ) {
+            return array(
+                'state'         => 'closed',
+                'failure_count' => 0,
+                'last_failure'  => 0,
+                'opened_at'     => 0,
+            );
+        }
+
+        // Auto-transition from open to half_open after timeout
+        if ( 'open' === $state['state'] ) {
+            $elapsed = time() - $state['opened_at'];
+            if ( $elapsed >= self::CIRCUIT_BREAKER_TIMEOUT ) {
+                $state['state'] = 'half_open';
+                set_transient( 'affilync_circuit_state', $state, self::CIRCUIT_BREAKER_TIMEOUT * 3 );
+            }
+        }
+
+        return $state;
+    }
+
+    /**
+     * ARCH-III-19: Record a circuit breaker failure.
+     *
+     * After CIRCUIT_BREAKER_THRESHOLD consecutive failures, the circuit opens
+     * and requests are queued locally instead of hitting the API.
+     */
+    private function record_circuit_failure() {
+        $state = $this->get_circuit_state();
+        $state['failure_count']++;
+        $state['last_failure'] = time();
+
+        if ( $state['failure_count'] >= self::CIRCUIT_BREAKER_THRESHOLD ) {
+            $state['state']     = 'open';
+            $state['opened_at'] = time();
+
+            // Log the circuit opening event
+            if ( function_exists( 'affilync_log_audit_event' ) ) {
+                affilync_log_audit_event( 'circuit_breaker_opened', array(
+                    'failure_count' => $state['failure_count'],
+                    'api_url'       => $this->api_url,
+                ) );
+            }
+        }
+
+        set_transient( 'affilync_circuit_state', $state, self::CIRCUIT_BREAKER_TIMEOUT * 3 );
+    }
+
+    /**
+     * ARCH-III-19: Record a circuit breaker success (reset to closed).
+     */
+    private function record_circuit_success() {
+        $state = $this->get_circuit_state();
+
+        if ( 'closed' !== $state['state'] ) {
+            // Log recovery
+            if ( function_exists( 'affilync_log_audit_event' ) ) {
+                affilync_log_audit_event( 'circuit_breaker_closed', array(
+                    'previous_state'  => $state['state'],
+                    'failure_count'   => $state['failure_count'],
+                    'recovery_time_s' => time() - $state['opened_at'],
+                ) );
+            }
+        }
+
+        delete_transient( 'affilync_circuit_state' );
+    }
+
+    /**
+     * ARCH-III-19: Queue a request locally when the circuit is open.
+     *
+     * Queued requests are stored as a WordPress option and processed
+     * when the circuit closes (via the drain_request_queue method).
+     *
+     * @param string $method   HTTP method.
+     * @param string $endpoint API endpoint.
+     * @param array  $options  Request options.
+     * @return bool True if queued successfully.
+     */
+    private function queue_request( $method, $endpoint, $options = array() ) {
+        $queue = get_option( 'affilync_request_queue', array() );
+
+        if ( count( $queue ) >= self::MAX_QUEUED_REQUESTS ) {
+            // Drop oldest request to prevent unbounded queue growth
+            array_shift( $queue );
+        }
+
+        $queue[] = array(
+            'method'    => $method,
+            'endpoint'  => $endpoint,
+            'options'   => $options,
+            'queued_at' => time(),
+        );
+
+        update_option( 'affilync_request_queue', $queue, false );
+        return true;
+    }
+
+    /**
+     * ARCH-III-19: Drain the request queue by replaying queued requests.
+     *
+     * Called after the circuit transitions back to closed. Processes
+     * queued requests in FIFO order with a brief delay between each.
+     *
+     * @return array Summary with 'processed', 'failed', and 'remaining' counts.
+     */
+    public function drain_request_queue() {
+        $queue = get_option( 'affilync_request_queue', array() );
+        if ( empty( $queue ) ) {
+            return array( 'processed' => 0, 'failed' => 0, 'remaining' => 0 );
+        }
+
+        $processed = 0;
+        $failed    = 0;
+        $remaining = array();
+
+        foreach ( $queue as $item ) {
+            // Skip requests older than 1 hour (stale)
+            if ( ( time() - $item['queued_at'] ) > 3600 ) {
+                continue;
+            }
+
+            $result = $this->request( $item['method'], $item['endpoint'], $item['options'] );
+
+            if ( is_wp_error( $result ) ) {
+                $failed++;
+                // If the API is down again, stop draining and re-queue remaining
+                $error_code = $result->get_error_code();
+                if ( 'circuit_open' === $error_code || 'request_failed' === $error_code ) {
+                    $remaining = array_slice( $queue, $processed + $failed );
+                    break;
+                }
+            } else {
+                $processed++;
+            }
+        }
+
+        // Save any remaining items back to the queue
+        update_option( 'affilync_request_queue', $remaining, false );
+
+        return array(
+            'processed' => $processed,
+            'failed'    => $failed,
+            'remaining' => count( $remaining ),
+        );
+    }
+
+    /**
      * Make an API request.
+     *
+     * ARCH-III-19: Includes circuit breaker pattern for graceful degradation.
+     * When the Affilync API is down, non-critical requests are queued locally
+     * and replayed when the API recovers.
      *
      * @param string $method  HTTP method.
      * @param string $endpoint API endpoint.
@@ -137,6 +321,26 @@ class Affilync_API_Client {
                 'rate_limited',
                 __( 'Too many requests. Please try again later.', 'affilync-woocommerce' ),
                 array( 'status' => 429 )
+            );
+        }
+
+        // ARCH-III-19: Check circuit breaker state
+        $circuit = $this->get_circuit_state();
+
+        if ( 'open' === $circuit['state'] ) {
+            // Circuit is open -- queue non-GET requests for later replay
+            if ( 'GET' !== $method ) {
+                $this->queue_request( $method, $endpoint, $options );
+            }
+
+            return new WP_Error(
+                'circuit_open',
+                __( 'Affilync API is temporarily unavailable. Your request has been queued.', 'affilync-woocommerce' ),
+                array(
+                    'status'         => 503,
+                    'queued'         => ( 'GET' !== $method ),
+                    'retry_after'    => max( 0, self::CIRCUIT_BREAKER_TIMEOUT - ( time() - $circuit['opened_at'] ) ),
+                )
             );
         }
 
@@ -188,6 +392,8 @@ class Affilync_API_Client {
         $response = $this->request_with_retry( $url, $args );
 
         if ( is_wp_error( $response ) ) {
+            // ARCH-III-19: Record failure for circuit breaker
+            $this->record_circuit_failure();
             return $response;
         }
 
@@ -207,6 +413,11 @@ class Affilync_API_Client {
                 update_option( 'affilync_connection_status', 'disconnected' );
             }
 
+            // ARCH-III-19: 5xx errors count toward circuit breaker
+            if ( $status_code >= 500 ) {
+                $this->record_circuit_failure();
+            }
+
             return new WP_Error(
                 'api_error',
                 $error_message,
@@ -215,6 +426,17 @@ class Affilync_API_Client {
                     'response'    => $data,
                 )
             );
+        }
+
+        // ARCH-III-19: Successful response -- reset circuit breaker
+        $this->record_circuit_success();
+
+        // If we just recovered, try to drain the request queue
+        if ( 'half_open' === $circuit['state'] || 'open' === $circuit['state'] ) {
+            // Schedule async queue drain to avoid blocking the current request
+            if ( ! wp_next_scheduled( 'affilync_drain_request_queue' ) ) {
+                wp_schedule_single_event( time() + 5, 'affilync_drain_request_queue' );
+            }
         }
 
         return $data;
@@ -491,5 +713,37 @@ class Affilync_API_Client {
      */
     public function get_api_url() {
         return $this->api_url;
+    }
+
+    /**
+     * ARCH-III-19: Get circuit breaker status for admin display.
+     *
+     * @return array Circuit breaker status.
+     */
+    public function get_circuit_status() {
+        $circuit = $this->get_circuit_state();
+        $queue   = get_option( 'affilync_request_queue', array() );
+
+        return array(
+            'state'           => $circuit['state'],
+            'failure_count'   => $circuit['failure_count'],
+            'last_failure'    => $circuit['last_failure'] > 0
+                ? gmdate( 'Y-m-d H:i:s', $circuit['last_failure'] )
+                : null,
+            'queued_requests' => count( $queue ),
+            'recovery_in'     => 'open' === $circuit['state']
+                ? max( 0, self::CIRCUIT_BREAKER_TIMEOUT - ( time() - $circuit['opened_at'] ) )
+                : 0,
+        );
+    }
+
+    /**
+     * ARCH-III-19: Manually reset the circuit breaker.
+     *
+     * Use this after confirming the API is back online.
+     */
+    public function reset_circuit_breaker() {
+        delete_transient( 'affilync_circuit_state' );
+        $this->drain_request_queue();
     }
 }
