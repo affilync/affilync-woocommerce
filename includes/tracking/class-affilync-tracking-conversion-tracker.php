@@ -62,6 +62,20 @@ class Affilync_Tracking_Conversion_Tracker {
     }
 
     /**
+     * Maximum retry attempts for async sync.
+     *
+     * @var int
+     */
+    const MAX_RETRY_ATTEMPTS = 3;
+
+    /**
+     * Action Scheduler group for conversion syncing.
+     *
+     * @var string
+     */
+    const ASYNC_GROUP = 'affilync_conversion_sync';
+
+    /**
      * Initialize hooks.
      */
     private function init_hooks() {
@@ -78,6 +92,9 @@ class Affilync_Tracking_Conversion_Tracker {
 
         // Cron hook for syncing.
         add_action( 'affilync_sync_conversions', array( $this, 'sync_pending_conversions' ) );
+
+        // PAY-III-03: Action Scheduler callback for async conversion sync.
+        add_action( 'affilync_async_sync_conversion', array( $this, 'async_sync_conversion_callback' ), 10, 2 );
     }
 
     /**
@@ -147,8 +164,10 @@ class Affilync_Tracking_Conversion_Tracker {
         $order->update_meta_data( '_affilync_attribution', $attribution );
         $order->save();
 
-        // Sync to API.
-        $this->sync_conversion( $conversion_id );
+        // PAY-III-03: Schedule async API sync via Action Scheduler instead of
+        // blocking the checkout/order-status-change request. This eliminates the
+        // 3-5s delay customers experience on order completion.
+        $this->schedule_async_sync( $conversion_id );
 
         // Add order note.
         $order->add_order_note(
@@ -334,6 +353,86 @@ class Affilync_Tracking_Conversion_Tracker {
         );
 
         return true;
+    }
+
+    /**
+     * Schedule async conversion sync via WooCommerce Action Scheduler.
+     *
+     * PAY-III-03: Replaces synchronous API calls on order completion hooks to
+     * eliminate the 3-5s checkout delay. Uses as_schedule_single_action() to
+     * queue the sync for immediate background processing with retry support.
+     *
+     * @param int $conversion_id Local conversion ID.
+     * @param int $attempt       Current attempt number (default 1).
+     */
+    private function schedule_async_sync( $conversion_id, $attempt = 1 ) {
+        if ( function_exists( 'as_schedule_single_action' ) ) {
+            // Schedule for immediate background processing (timestamp = now).
+            as_schedule_single_action(
+                time(),
+                'affilync_async_sync_conversion',
+                array(
+                    'conversion_id' => $conversion_id,
+                    'attempt'       => $attempt,
+                ),
+                self::ASYNC_GROUP
+            );
+        } else {
+            // Fallback: Action Scheduler not available (shouldn't happen with
+            // WooCommerce 3.5+), fall back to synchronous sync.
+            $this->sync_conversion( $conversion_id );
+        }
+    }
+
+    /**
+     * Action Scheduler callback for async conversion sync.
+     *
+     * PAY-III-03: Called by Action Scheduler in a background process. Performs
+     * the actual API call to sync the conversion. On failure, schedules a retry
+     * with exponential backoff (10s, 40s, 90s) up to MAX_RETRY_ATTEMPTS.
+     *
+     * @param int $conversion_id Local conversion ID.
+     * @param int $attempt       Current attempt number.
+     */
+    public function async_sync_conversion_callback( $conversion_id, $attempt = 1 ) {
+        $success = $this->sync_conversion( $conversion_id );
+
+        if ( ! $success && $attempt < self::MAX_RETRY_ATTEMPTS ) {
+            // Exponential backoff: attempt^2 * 10 seconds (10s, 40s, 90s).
+            $delay = pow( $attempt, 2 ) * 10;
+
+            $this->audit_logger->info(
+                'conversion_sync_retry',
+                array(
+                    'conversion_id' => $conversion_id,
+                    'attempt'       => $attempt,
+                    'next_attempt'  => $attempt + 1,
+                    'delay_seconds' => $delay,
+                )
+            );
+
+            if ( function_exists( 'as_schedule_single_action' ) ) {
+                as_schedule_single_action(
+                    time() + $delay,
+                    'affilync_async_sync_conversion',
+                    array(
+                        'conversion_id' => $conversion_id,
+                        'attempt'       => $attempt + 1,
+                    ),
+                    self::ASYNC_GROUP
+                );
+            }
+        } elseif ( ! $success ) {
+            // All retries exhausted; log error. The sync_pending_conversions
+            // cron will pick it up later as a final safety net.
+            $this->audit_logger->error(
+                'conversion_sync_failed_all_retries',
+                array(
+                    'conversion_id' => $conversion_id,
+                    'attempts'      => $attempt,
+                )
+            );
+        }
     }
 
     /**
