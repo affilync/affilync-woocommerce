@@ -74,6 +74,8 @@ spl_autoload_register( function( $class ) {
 
     // Map class prefixes to directories.
     $prefix_map = array(
+        'Affilync_Multisite'    => 'multisite',
+        'Affilync_Network'      => 'admin',
         'Affilync_Admin'        => 'admin',
         'Affilync_API'          => 'api',
         'Affilync_Security'     => 'security',
@@ -222,6 +224,13 @@ final class Affilync_WooCommerce {
     public $webhook_queue;
 
     /**
+     * Multisite handler.
+     *
+     * @var Affilync_Multisite|null
+     */
+    public $multisite;
+
+    /**
      * Integrity checker.
      *
      * @var Affilync_Security_Integrity
@@ -310,6 +319,13 @@ final class Affilync_WooCommerce {
 
         // Helper classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/helpers/class-affilync-helper-logger.php';
+
+        // Multisite classes.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/multisite/class-affilync-multisite.php';
+
+        if ( is_multisite() && is_network_admin() ) {
+            require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-network-admin.php';
+        }
     }
 
     /**
@@ -448,6 +464,12 @@ final class Affilync_WooCommerce {
                 $this->audit_logger,
                 $this->hmac_validator
             );
+        }
+
+        // Initialize multisite support.
+        $this->multisite = Affilync_Multisite::instance();
+        if ( Affilync_Multisite::is_multisite() && is_network_admin() ) {
+            new Affilync_Network_Admin( $this->multisite );
         }
 
         /**
@@ -603,6 +625,9 @@ final class Affilync_WooCommerce {
 
     /**
      * Plugin activation.
+     *
+     * Handles both single-site and network-wide activation. On multisite
+     * network activation, initializes tables and settings for every site.
      */
     public function activate() {
         // Create database tables.
@@ -618,6 +643,13 @@ final class Affilync_WooCommerce {
 
         // Store current plugin version (first install or re-activation).
         update_option( 'affilync_version', AFFILYNC_VERSION );
+
+        // Handle multisite network activation.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/multisite/class-affilync-multisite.php';
+        $multisite = Affilync_Multisite::instance();
+        if ( Affilync_Multisite::is_multisite() && is_network_admin() ) {
+            $multisite->network_activate();
+        }
 
         // Set activation flag for redirect.
         set_transient( 'affilync_activation_redirect', true, 30 );
