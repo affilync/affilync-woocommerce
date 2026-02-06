@@ -194,6 +194,57 @@ class Affilync_API_REST_Controller {
             )
         );
 
+        // Conversion tracking endpoint (public with HMAC or API key verification).
+        register_rest_route(
+            self::NAMESPACE,
+            '/conversions/track',
+            array(
+                'methods'             => 'POST',
+                'callback'            => array( $this, 'track_conversion' ),
+                'permission_callback' => '__return_true',
+                'args'                => array(
+                    'order_id'     => array(
+                        'required'          => true,
+                        'validate_callback' => function( $param ) {
+                            return is_numeric( $param ) && intval( $param ) > 0;
+                        },
+                        'sanitize_callback' => 'absint',
+                    ),
+                    'affiliate_id' => array(
+                        'required'          => true,
+                        'sanitize_callback' => 'sanitize_text_field',
+                        'validate_callback' => function( $param ) {
+                            return ! empty( $param ) && is_string( $param );
+                        },
+                    ),
+                    'amount'       => array(
+                        'required'          => true,
+                        'validate_callback' => function( $param ) {
+                            return is_numeric( $param ) && floatval( $param ) >= 0;
+                        },
+                        'sanitize_callback' => function( $param ) {
+                            return round( floatval( $param ), 4 );
+                        },
+                    ),
+                    'currency'     => array(
+                        'required'          => false,
+                        'default'           => 'USD',
+                        'sanitize_callback' => function( $param ) {
+                            return strtoupper( sanitize_text_field( $param ) );
+                        },
+                        'validate_callback' => function( $param ) {
+                            return is_string( $param ) && preg_match( '/^[A-Z]{3}$/i', $param );
+                        },
+                    ),
+                    'click_id'     => array(
+                        'required'          => false,
+                        'default'           => '',
+                        'sanitize_callback' => 'sanitize_text_field',
+                    ),
+                ),
+            )
+        );
+
         // Health check (public).
         register_rest_route(
             self::NAMESPACE,
@@ -617,6 +668,242 @@ class Affilync_API_REST_Controller {
                 'settings' => $updated,
             )
         );
+    }
+
+    /**
+     * Track a conversion via REST API.
+     *
+     * Public endpoint that accepts conversion data from external systems
+     * (e.g., the Affilync platform or third-party integrations). Applies
+     * rate limiting via the 'conversion_track' config, validates the order
+     * exists and belongs to this store, checks for duplicate tracking, and
+     * records the conversion in the affilync_conversions table.
+     *
+     * @since 1.0.0
+     *
+     * @param WP_REST_Request $request Request object with body params:
+     *     order_id (int), affiliate_id (string), amount (float),
+     *     currency (string, optional), click_id (string, optional).
+     * @return WP_REST_Response|WP_Error 201 with conversion_id on success,
+     *     429 if rate-limited, 400/404/409 on validation failures.
+     */
+    public function track_conversion( $request ) {
+        // Apply rate limiting using the 'conversion_track' configuration.
+        $rate_check = $this->rate_limiter->check( 'conversion_track' );
+        if ( ! $rate_check['allowed'] ) {
+            $this->audit_logger->warning(
+                Affilync_Security_Audit_Logger::EVENT_RATE_LIMITED,
+                array( 'action' => 'conversion_track' )
+            );
+
+            return new WP_Error(
+                'rate_limited',
+                __( 'Too many conversion tracking requests. Please try again later.', 'affilync-woocommerce' ),
+                array( 'status' => 429 )
+            );
+        }
+
+        // Verify HMAC signature if present (trusted external callers sign requests).
+        $signature = $request->get_header( 'X-Affilync-Signature' );
+        if ( $signature ) {
+            $body_raw = $request->get_body();
+            if ( ! $this->hmac_validator->validate( $body_raw, $signature ) ) {
+                $this->audit_logger->warning(
+                    Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
+                    array( 'action' => 'conversion_track', 'reason' => 'invalid_hmac' )
+                );
+
+                return new WP_Error(
+                    'invalid_signature',
+                    __( 'Invalid request signature.', 'affilync-woocommerce' ),
+                    array( 'status' => 403 )
+                );
+            }
+        }
+
+        // Extract validated and sanitized parameters.
+        $order_id     = $request->get_param( 'order_id' );
+        $affiliate_id = $request->get_param( 'affiliate_id' );
+        $amount       = $request->get_param( 'amount' );
+        $currency     = $request->get_param( 'currency' );
+        $click_id     = $request->get_param( 'click_id' );
+
+        // Validate the order exists in WooCommerce.
+        if ( ! function_exists( 'wc_get_order' ) ) {
+            return new WP_Error(
+                'woocommerce_unavailable',
+                __( 'WooCommerce is not available.', 'affilync-woocommerce' ),
+                array( 'status' => 503 )
+            );
+        }
+
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            return new WP_Error(
+                'order_not_found',
+                /* translators: %d: Order ID */
+                sprintf( __( 'Order #%d was not found.', 'affilync-woocommerce' ), $order_id ),
+                array( 'status' => 404 )
+            );
+        }
+
+        // Verify the order belongs to this store by checking it has a valid status.
+        $valid_statuses = wc_get_order_statuses();
+        $order_status   = 'wc-' . $order->get_status();
+        if ( ! isset( $valid_statuses[ $order_status ] ) ) {
+            return new WP_Error(
+                'invalid_order',
+                __( 'The order has an unrecognized status.', 'affilync-woocommerce' ),
+                array( 'status' => 400 )
+            );
+        }
+
+        // Check for duplicate tracking (same order_id already has a conversion).
+        global $wpdb;
+        $table = $wpdb->prefix . 'affilync_conversions';
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $existing = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT id FROM {$table} WHERE order_id = %d LIMIT 1",
+                $order_id
+            )
+        );
+
+        if ( $existing ) {
+            return new WP_Error(
+                'duplicate_conversion',
+                /* translators: %d: Order ID */
+                sprintf( __( 'A conversion for order #%d has already been tracked.', 'affilync-woocommerce' ), $order_id ),
+                array(
+                    'status'        => 409,
+                    'conversion_id' => intval( $existing ),
+                )
+            );
+        }
+
+        // Calculate commission using the order subtotal and a default rate.
+        $default_commission_rate = 0.10; // 10%.
+
+        /**
+         * Filter the commission rate for REST-tracked conversions.
+         *
+         * @since 1.0.0
+         *
+         * @param float    $rate         Default commission rate (0.10 = 10%).
+         * @param WC_Order $order        The WooCommerce order.
+         * @param string   $affiliate_id The affiliate ID.
+         */
+        $commission_rate = apply_filters(
+            'affilync_conversion_track_commission_rate',
+            $default_commission_rate,
+            $order,
+            $affiliate_id
+        );
+
+        $commission_amount = round( floatval( $order->get_subtotal() ) * floatval( $commission_rate ), 4 );
+
+        // Insert the conversion record.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+        $inserted = $wpdb->insert(
+            $table,
+            array(
+                'order_id'          => $order_id,
+                'affiliate_id'      => $affiliate_id,
+                'campaign_id'       => null,
+                'link_id'           => null,
+                'click_id'          => ! empty( $click_id ) ? $click_id : null,
+                'order_total'       => $amount,
+                'commission_amount' => $commission_amount,
+                'currency'          => $currency,
+                'status'            => 'pending',
+                'attribution_data'  => wp_json_encode(
+                    array(
+                        'source'       => 'rest_api',
+                        'affiliate_id' => $affiliate_id,
+                        'click_id'     => $click_id,
+                        'tracked_at'   => current_time( 'mysql', true ),
+                    )
+                ),
+                'synced_to_api'     => 0,
+            ),
+            array( '%d', '%s', '%s', '%s', '%s', '%f', '%f', '%s', '%s', '%s', '%d' )
+        );
+
+        if ( ! $inserted ) {
+            $this->audit_logger->error(
+                Affilync_Security_Audit_Logger::EVENT_CONVERSION_FAILED,
+                array(
+                    'order_id'     => $order_id,
+                    'affiliate_id' => $affiliate_id,
+                    'reason'       => 'database_insert_failed',
+                    'db_error'     => $wpdb->last_error,
+                )
+            );
+
+            return new WP_Error(
+                'conversion_failed',
+                __( 'Failed to record the conversion. Please try again.', 'affilync-woocommerce' ),
+                array( 'status' => 500 )
+            );
+        }
+
+        $conversion_id = $wpdb->insert_id;
+
+        // Store tracking metadata on the order.
+        $order->update_meta_data( '_affilync_conversion_id', $conversion_id );
+        $order->update_meta_data( '_affilync_tracked', 'yes' );
+        $order->update_meta_data(
+            '_affilync_attribution',
+            array(
+                'affiliate_id' => $affiliate_id,
+                'click_id'     => $click_id,
+                'source'       => 'rest_api',
+            )
+        );
+        $order->save();
+
+        // Add an order note for visibility.
+        $order->add_order_note(
+            sprintf(
+                /* translators: %s: Affiliate ID */
+                __( 'Affilync: Conversion tracked via REST API for affiliate %s', 'affilync-woocommerce' ),
+                $affiliate_id
+            )
+        );
+
+        // Log the successful conversion.
+        $this->audit_logger->info(
+            Affilync_Security_Audit_Logger::EVENT_CONVERSION_TRACKED,
+            array(
+                'conversion_id' => $conversion_id,
+                'order_id'      => $order_id,
+                'affiliate_id'  => $affiliate_id,
+                'amount'        => $amount,
+                'currency'      => $currency,
+                'click_id'      => $click_id,
+                'source'        => 'rest_api',
+            )
+        );
+
+        $response = rest_ensure_response(
+            array(
+                'success'       => true,
+                'conversion_id' => $conversion_id,
+                'order_id'      => $order_id,
+                'affiliate_id'  => $affiliate_id,
+                'amount'        => $amount,
+                'currency'      => $currency,
+                'commission'    => $commission_amount,
+                'status'        => 'pending',
+            )
+        );
+
+        $response->set_status( 201 );
+        $response->header( 'X-RateLimit-Remaining', $rate_check['remaining'] );
+        $response->header( 'X-RateLimit-Limit', $rate_check['limit'] );
+
+        return $response;
     }
 
     /**

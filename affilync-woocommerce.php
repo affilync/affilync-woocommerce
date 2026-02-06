@@ -229,6 +229,13 @@ final class Affilync_WooCommerce {
     private $license_valid = false;
 
     /**
+     * Whether the upgrade check has already run this request.
+     *
+     * @var bool
+     */
+    private $upgrade_checked = false;
+
+    /**
      * Get plugin instance.
      *
      * @return Affilync_WooCommerce
@@ -304,6 +311,9 @@ final class Affilync_WooCommerce {
         // Activation/Deactivation hooks.
         register_activation_hook( AFFILYNC_PLUGIN_FILE, array( $this, 'activate' ) );
         register_deactivation_hook( AFFILYNC_PLUGIN_FILE, array( $this, 'deactivate' ) );
+
+        // Run version upgrade check early, before full init.
+        add_action( 'plugins_loaded', array( $this, 'maybe_upgrade' ), 10 );
 
         // Initialize plugin.
         add_action( 'plugins_loaded', array( $this, 'init' ), 20 );
@@ -592,6 +602,9 @@ final class Affilync_WooCommerce {
         $integrity = new Affilync_Security_Integrity();
         $integrity->generate_file_hashes();
 
+        // Store current plugin version (first install or re-activation).
+        update_option( 'affilync_version', AFFILYNC_VERSION );
+
         // Set activation flag for redirect.
         set_transient( 'affilync_activation_redirect', true, 30 );
 
@@ -608,6 +621,189 @@ final class Affilync_WooCommerce {
 
         // Flush rewrite rules.
         flush_rewrite_rules();
+    }
+
+    /**
+     * Check if the plugin was updated and run upgrade routines if needed.
+     *
+     * Compares the stored plugin version against the current AFFILYNC_VERSION constant.
+     * If the stored version is older, runs version-specific upgrade routines then
+     * updates the stored version to match.
+     *
+     * @since 1.0.0
+     */
+    public function maybe_upgrade() {
+        if ( $this->upgrade_checked ) {
+            return;
+        }
+        $this->upgrade_checked = true;
+
+        $stored_version = get_option( 'affilync_version', '0.0.0' );
+
+        if ( version_compare( $stored_version, AFFILYNC_VERSION, '<' ) ) {
+            $this->run_upgrades( $stored_version, AFFILYNC_VERSION );
+            update_option( 'affilync_version', AFFILYNC_VERSION );
+        }
+    }
+
+    /**
+     * Run version-based upgrade routines.
+     *
+     * Executes schema changes, data migrations, and any other upgrade logic
+     * required when the plugin is updated from one version to another. Each
+     * version block is guarded by a version_compare so it only runs once.
+     *
+     * @since 1.0.0
+     *
+     * @param string $from_version The previously stored plugin version.
+     * @param string $to_version   The current plugin version being upgraded to.
+     */
+    private function run_upgrades( $from_version, $to_version ) {
+        global $wpdb;
+
+        // Re-run dbDelta to ensure all tables have the latest schema.
+        // This handles column additions and index changes safely.
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $this->create_tables();
+
+        // --- Version-specific migrations ---
+
+        // Upgrade to 1.1.0: Add sub_id column to conversions for sub-affiliate tracking.
+        if ( version_compare( $from_version, '1.1.0', '<' ) ) {
+            $table = $wpdb->prefix . 'affilync_conversions';
+            $column_exists = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                     WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = 'sub_id'",
+                    DB_NAME,
+                    $table
+                )
+            );
+            if ( empty( $column_exists ) ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
+                $wpdb->query(
+                    "ALTER TABLE {$table} ADD COLUMN sub_id varchar(64) DEFAULT NULL AFTER click_id"
+                );
+            }
+        }
+
+        // Upgrade to 1.2.0: Add retry_count column to conversions for API sync resilience.
+        if ( version_compare( $from_version, '1.2.0', '<' ) ) {
+            $table = $wpdb->prefix . 'affilync_conversions';
+            $column_exists = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                     WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = 'retry_count'",
+                    DB_NAME,
+                    $table
+                )
+            );
+            if ( empty( $column_exists ) ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
+                $wpdb->query(
+                    "ALTER TABLE {$table} ADD COLUMN retry_count int(11) NOT NULL DEFAULT 0 AFTER synced_to_api"
+                );
+            }
+        }
+
+        // Upgrade to 1.3.0: Add metadata column to webhooks for extended processing info.
+        if ( version_compare( $from_version, '1.3.0', '<' ) ) {
+            $table = $wpdb->prefix . 'affilync_webhooks';
+            $column_exists = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                     WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = 'metadata'",
+                    DB_NAME,
+                    $table
+                )
+            );
+            if ( empty( $column_exists ) ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
+                $wpdb->query(
+                    "ALTER TABLE {$table} ADD COLUMN metadata longtext DEFAULT NULL AFTER processing_result"
+                );
+            }
+        }
+
+        // Re-generate integrity hashes after any upgrade (files may have changed).
+        if ( file_exists( AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php' ) ) {
+            require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php';
+            $integrity = new Affilync_Security_Integrity();
+            $integrity->generate_file_hashes();
+        }
+
+        // Log the upgrade event to the audit log table.
+        $this->log_upgrade_event( $from_version, $to_version );
+    }
+
+    /**
+     * Log an upgrade event directly to the audit log table.
+     *
+     * Inserts a record without depending on the Affilync_Security_Audit_Logger class
+     * being fully initialized, since upgrades run very early in the WordPress lifecycle.
+     *
+     * @since 1.0.0
+     *
+     * @param string $from_version The version being upgraded from.
+     * @param string $to_version   The version being upgraded to.
+     */
+    private function log_upgrade_event( $from_version, $to_version ) {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'affilync_audit_log';
+
+        // Verify the audit log table exists before writing.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $table_exists = $wpdb->get_var(
+            $wpdb->prepare( 'SHOW TABLES LIKE %s', $table )
+        );
+
+        if ( ! $table_exists ) {
+            return;
+        }
+
+        $details = wp_json_encode(
+            array(
+                'from_version' => $from_version,
+                'to_version'   => $to_version,
+                'php_version'  => PHP_VERSION,
+                'wp_version'   => get_bloginfo( 'version' ),
+                'wc_version'   => defined( 'WC_VERSION' ) ? WC_VERSION : 'unknown',
+                'logged_at'    => current_time( 'mysql', true ),
+            )
+        );
+
+        $ip_address = '0.0.0.0';
+        $headers = array( 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR' );
+        foreach ( $headers as $header ) {
+            if ( ! empty( $_SERVER[ $header ] ) ) {
+                $ip = sanitize_text_field( wp_unslash( $_SERVER[ $header ] ) );
+                if ( strpos( $ip, ',' ) !== false ) {
+                    $ips = explode( ',', $ip );
+                    $ip  = trim( $ips[0] );
+                }
+                if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+                    $ip_address = $ip;
+                    break;
+                }
+            }
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+        $wpdb->insert(
+            $table,
+            array(
+                'event_type' => 'plugin_upgraded',
+                'user_id'    => get_current_user_id() ?: null,
+                'ip_address' => $ip_address,
+                'user_agent' => isset( $_SERVER['HTTP_USER_AGENT'] )
+                    ? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 255 )
+                    : null,
+                'details'    => $details,
+                'severity'   => 'info',
+            ),
+            array( '%s', '%d', '%s', '%s', '%s', '%s' )
+        );
     }
 
     /**
