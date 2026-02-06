@@ -201,6 +201,20 @@ final class Affilync_WooCommerce {
     public $license_manager;
 
     /**
+     * AJAX handlers.
+     *
+     * @var Affilync_Admin_Ajax
+     */
+    public $ajax;
+
+    /**
+     * Webhook handler.
+     *
+     * @var Affilync_API_Webhook_Handler
+     */
+    public $webhook_handler;
+
+    /**
      * Integrity checker.
      *
      * @var Affilync_Security_Integrity
@@ -276,6 +290,7 @@ final class Affilync_WooCommerce {
             require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-settings.php';
             require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-dashboard-widget.php';
             require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-stats.php';
+            require_once AFFILYNC_PLUGIN_DIR . 'includes/admin/class-affilync-admin-ajax.php';
         }
 
         // Helper classes.
@@ -390,18 +405,26 @@ final class Affilync_WooCommerce {
         // Initialize REST API.
         add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 
+        // Initialize OAuth handler.
+        new Affilync_API_OAuth( $this->nonce_manager, $this->encryption, $this->api_client );
+
+        // Initialize webhook handler.
+        $this->webhook_handler = new Affilync_API_Webhook_Handler( $this->hmac_validator, $this->audit_logger );
+
         // Initialize admin.
         if ( is_admin() ) {
             new Affilync_Admin_Settings();
             new Affilync_Admin_Dashboard_Widget();
             new Affilync_Admin_Stats();
+            $this->ajax = new Affilync_Admin_Ajax(
+                $this->api_client,
+                $this->product_sync,
+                $this->conversion_tracker,
+                $this->webhook_handler,
+                $this->audit_logger,
+                $this->hmac_validator
+            );
         }
-
-        // Initialize OAuth handler.
-        new Affilync_API_OAuth( $this->nonce_manager, $this->encryption, $this->api_client );
-
-        // Initialize webhook handler.
-        new Affilync_API_Webhook_Handler( $this->hmac_validator, $this->audit_logger );
 
         /**
          * Fires after Affilync WooCommerce plugin is fully initialized.
