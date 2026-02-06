@@ -34,6 +34,13 @@ class Affilync_API_Webhook_Handler {
     private $audit_logger;
 
     /**
+     * Webhook queue for persistent delivery with retries.
+     *
+     * @var Affilync_Webhook_Queue|null
+     */
+    private $webhook_queue;
+
+    /**
      * Table name for webhook logs.
      *
      * @var string
@@ -43,14 +50,27 @@ class Affilync_API_Webhook_Handler {
     /**
      * Constructor.
      *
-     * @param Affilync_Security_HMAC_Validator $hmac_validator HMAC validator.
-     * @param Affilync_Security_Audit_Logger   $audit_logger   Audit logger.
+     * @param Affilync_Security_HMAC_Validator  $hmac_validator HMAC validator.
+     * @param Affilync_Security_Audit_Logger    $audit_logger   Audit logger.
+     * @param Affilync_Webhook_Queue|null       $webhook_queue  Optional webhook queue.
      */
-    public function __construct( $hmac_validator, $audit_logger ) {
+    public function __construct( $hmac_validator, $audit_logger, $webhook_queue = null ) {
         $this->hmac_validator = $hmac_validator;
         $this->audit_logger   = $audit_logger;
+        $this->webhook_queue  = $webhook_queue;
 
         $this->init_hooks();
+    }
+
+    /**
+     * Set the webhook queue instance.
+     *
+     * Allows late-binding the queue after construction.
+     *
+     * @param Affilync_Webhook_Queue $webhook_queue Webhook queue instance.
+     */
+    public function set_webhook_queue( $webhook_queue ) {
+        $this->webhook_queue = $webhook_queue;
     }
 
     /**
@@ -99,9 +119,9 @@ class Affilync_API_Webhook_Handler {
             );
         }
 
-        // Extract event info.
-        $webhook_id = isset( $payload['webhook_id'] ) ? sanitize_text_field( $payload['webhook_id'] ) : wp_generate_uuid4();
-        $event_type = isset( $payload['event'] ) ? sanitize_text_field( $payload['event'] ) : 'unknown';
+        // Extract event info (wp_unslash before sanitize to reverse WP magic quotes).
+        $webhook_id = isset( $payload['webhook_id'] ) ? sanitize_text_field( wp_unslash( $payload['webhook_id'] ) ) : wp_generate_uuid4();
+        $event_type = isset( $payload['event'] ) ? sanitize_text_field( wp_unslash( $payload['event'] ) ) : 'unknown';
 
         // Check for duplicate.
         if ( $this->is_duplicate( $webhook_id ) ) {
@@ -113,7 +133,7 @@ class Affilync_API_Webhook_Handler {
             );
         }
 
-        // Log webhook.
+        // Log webhook to the webhook log table.
         $log_id = $this->log_webhook( $webhook_id, $event_type, $payload, true );
 
         // Audit log.
@@ -125,7 +145,14 @@ class Affilync_API_Webhook_Handler {
             )
         );
 
-        // Schedule async processing.
+        // Enqueue in persistent webhook queue for reliable delivery.
+        $queue_id = null;
+        if ( $this->webhook_queue ) {
+            $queue_id = $this->webhook_queue->enqueue( $event_type, $payload );
+        }
+
+        // Attempt immediate processing via WP-Cron. If WP-Cron is slow
+        // or fails, the persistent queue will retry on its next cron run.
         wp_schedule_single_event( time(), 'affilync_process_webhook', array( $log_id ) );
 
         // Return 200 OK immediately.
@@ -133,6 +160,7 @@ class Affilync_API_Webhook_Handler {
             array(
                 'status'     => 'accepted',
                 'webhook_id' => $webhook_id,
+                'queued'     => ! is_null( $queue_id ),
             )
         );
     }
@@ -170,6 +198,10 @@ class Affilync_API_Webhook_Handler {
             // Update log with result.
             $this->update_webhook_log( $log_id, true, $result );
 
+            // Mark the corresponding queue item as completed so the
+            // persistent queue does not re-deliver this webhook.
+            $this->mark_queue_item_completed( $event_type, $webhook->webhook_id );
+
         } catch ( Exception $e ) {
             // Log failure.
             $this->update_webhook_log( $log_id, false, array( 'error' => $e->getMessage() ) );
@@ -182,7 +214,51 @@ class Affilync_API_Webhook_Handler {
                     'error'      => $e->getMessage(),
                 )
             );
+
+            // The webhook stays in the persistent queue for retry
+            // via the queue processor's exponential backoff.
         }
+    }
+
+    /**
+     * Mark corresponding queue items as completed after successful processing.
+     *
+     * Finds pending queue items matching the event type and webhook ID,
+     * then marks them as completed so they are not retried.
+     *
+     * @param string $event_type Event type.
+     * @param string $webhook_id Webhook ID.
+     */
+    private function mark_queue_item_completed( $event_type, $webhook_id ) {
+        global $wpdb;
+
+        $queue_table = $wpdb->prefix . Affilync_Webhook_Queue::TABLE_NAME;
+
+        // Check if the queue table exists before querying.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $table_exists = $wpdb->get_var(
+            $wpdb->prepare( 'SHOW TABLES LIKE %s', $queue_table )
+        );
+
+        if ( ! $table_exists ) {
+            return;
+        }
+
+        // Find and mark matching pending/failed queue items as completed.
+        // We match on event_type and look for the webhook_id in the JSON payload.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE {$queue_table}
+                SET status = 'completed', completed_at = %s
+                WHERE event_type = %s
+                AND status IN ('pending', 'failed', 'processing')
+                AND payload LIKE %s",
+                current_time( 'mysql', true ),
+                $event_type,
+                '%' . $wpdb->esc_like( $webhook_id ) . '%'
+            )
+        );
     }
 
     /**
@@ -223,7 +299,7 @@ class Affilync_API_Webhook_Handler {
     private function handle_conversion_approved( $payload ) {
         global $wpdb;
 
-        $conversion_id = isset( $payload['conversion_id'] ) ? sanitize_text_field( $payload['conversion_id'] ) : '';
+        $conversion_id = isset( $payload['conversion_id'] ) ? sanitize_text_field( wp_unslash( $payload['conversion_id'] ) ) : '';
         $order_id      = isset( $payload['order_id'] ) ? intval( $payload['order_id'] ) : 0;
 
         if ( ! $order_id ) {
@@ -273,9 +349,9 @@ class Affilync_API_Webhook_Handler {
     private function handle_conversion_rejected( $payload ) {
         global $wpdb;
 
-        $conversion_id = isset( $payload['conversion_id'] ) ? sanitize_text_field( $payload['conversion_id'] ) : '';
+        $conversion_id = isset( $payload['conversion_id'] ) ? sanitize_text_field( wp_unslash( $payload['conversion_id'] ) ) : '';
         $order_id      = isset( $payload['order_id'] ) ? intval( $payload['order_id'] ) : 0;
-        $reason        = isset( $payload['reason'] ) ? sanitize_text_field( $payload['reason'] ) : '';
+        $reason        = isset( $payload['reason'] ) ? sanitize_text_field( wp_unslash( $payload['reason'] ) ) : '';
 
         if ( ! $order_id ) {
             return array( 'status' => 'skipped', 'reason' => 'no_order_id' );

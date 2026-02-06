@@ -199,8 +199,8 @@ class Affilync_Security_HMAC_Validator {
      * }
      */
     public function verify_request() {
-        // Get raw body.
-        $payload = file_get_contents( 'php://input' );
+        // Get raw body and unslash to reverse WordPress magic quotes.
+        $payload = wp_unslash( file_get_contents( 'php://input' ) );
         if ( empty( $payload ) ) {
             return array(
                 'valid'   => false,
@@ -248,7 +248,7 @@ class Affilync_Security_HMAC_Validator {
             $headers = getallheaders();
             foreach ( $headers as $key => $value ) {
                 if ( strcasecmp( $key, $name ) === 0 ) {
-                    return sanitize_text_field( $value );
+                    return sanitize_text_field( wp_unslash( $value ) );
                 }
             }
         }

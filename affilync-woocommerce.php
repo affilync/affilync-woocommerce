@@ -215,6 +215,13 @@ final class Affilync_WooCommerce {
     public $webhook_handler;
 
     /**
+     * Webhook queue.
+     *
+     * @var Affilync_Webhook_Queue
+     */
+    public $webhook_queue;
+
+    /**
      * Integrity checker.
      *
      * @var Affilync_Security_Integrity
@@ -275,6 +282,7 @@ final class Affilync_WooCommerce {
         require_once AFFILYNC_PLUGIN_DIR . 'includes/api/class-affilync-api-oauth.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/api/class-affilync-api-webhook-handler.php';
         require_once AFFILYNC_PLUGIN_DIR . 'includes/api/class-affilync-api-rest-controller.php';
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/api/class-affilync-webhook-queue.php';
 
         // Tracking classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/tracking/class-affilync-tracking-conversion-tracker.php';
@@ -420,6 +428,12 @@ final class Affilync_WooCommerce {
 
         // Initialize webhook handler.
         $this->webhook_handler = new Affilync_API_Webhook_Handler( $this->hmac_validator, $this->audit_logger );
+
+        // Initialize webhook queue for reliable delivery with retries.
+        $this->webhook_queue = new Affilync_Webhook_Queue( $this->api_client, $this->audit_logger );
+
+        // Wire the queue to the handler for enqueue-on-receive.
+        $this->webhook_handler->set_webhook_queue( $this->webhook_queue );
 
         // Initialize admin.
         if ( is_admin() ) {
@@ -725,6 +739,12 @@ final class Affilync_WooCommerce {
             }
         }
 
+        // Upgrade to 1.4.0: Create webhook queue table for persistent delivery with retries.
+        if ( version_compare( $from_version, '1.4.0', '<' ) ) {
+            Affilync_Webhook_Queue::create_table();
+            Affilync_Webhook_Queue::schedule_cron_events();
+        }
+
         // Re-generate integrity hashes after any upgrade (files may have changed).
         if ( file_exists( AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php' ) ) {
             require_once AFFILYNC_PLUGIN_DIR . 'includes/security/class-affilync-security-integrity.php';
@@ -919,6 +939,25 @@ final class Affilync_WooCommerce {
             KEY used (used)
         ) $charset_collate;";
 
+        // Webhook queue table for persistent delivery with retries.
+        $sql[] = "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}affilync_webhook_queue (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            event_type varchar(64) NOT NULL,
+            payload longtext NOT NULL,
+            status varchar(20) NOT NULL DEFAULT 'pending',
+            attempts int(11) NOT NULL DEFAULT 0,
+            max_attempts int(11) NOT NULL DEFAULT 5,
+            next_retry_at datetime DEFAULT NULL,
+            created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at datetime DEFAULT NULL,
+            error_message text DEFAULT NULL,
+            PRIMARY KEY (id),
+            KEY status (status),
+            KEY next_retry_at (next_retry_at),
+            KEY event_type (event_type),
+            KEY status_retry (status, next_retry_at, attempts)
+        ) $charset_collate;";
+
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
         foreach ( $sql as $query ) {
@@ -944,6 +983,9 @@ final class Affilync_WooCommerce {
         if ( ! wp_next_scheduled( 'affilync_cleanup_expired' ) ) {
             wp_schedule_event( time(), 'daily', 'affilync_cleanup_expired' );
         }
+
+        // Schedule webhook queue processing and cleanup.
+        Affilync_Webhook_Queue::schedule_cron_events();
     }
 
     /**
@@ -954,6 +996,9 @@ final class Affilync_WooCommerce {
         wp_clear_scheduled_hook( 'affilync_sync_conversions' );
         wp_clear_scheduled_hook( 'affilync_cleanup_expired' );
         wp_clear_scheduled_hook( 'affilync_license_revalidation' );
+
+        // Clear webhook queue cron events.
+        Affilync_Webhook_Queue::clear_cron_events();
     }
 
     /**
