@@ -65,11 +65,11 @@ class Affilync_Security_Encryption {
     const VERSION = 'v1';
 
     /**
-     * Static salt for key derivation.
+     * Option name for the per-installation PBKDF2 salt.
      *
      * @var string
      */
-    const SALT = 'affilync_woocommerce_salt_v1';
+    const SALT_OPTION = 'affilync_pbkdf2_salt';
 
     /**
      * Derived encryption key (cached).
@@ -235,6 +235,27 @@ class Affilync_Security_Encryption {
     }
 
     /**
+     * Get or generate the per-installation PBKDF2 salt.
+     *
+     * On first use, generates a cryptographically random 32-byte salt
+     * and stores it in wp_options. All subsequent calls return the stored salt.
+     *
+     * @return string Raw binary salt (32 bytes).
+     */
+    private function get_salt() {
+        $stored_salt = get_option( self::SALT_OPTION );
+        if ( $stored_salt && strlen( base64_decode( $stored_salt, true ) ) === 32 ) {
+            return base64_decode( $stored_salt );
+        }
+
+        // Generate a new cryptographically secure random salt.
+        $salt = random_bytes( 32 );
+        update_option( self::SALT_OPTION, base64_encode( $salt ), false );
+
+        return $salt;
+    }
+
+    /**
      * Derive encryption key from master key using PBKDF2.
      *
      * @return string Derived key.
@@ -245,11 +266,12 @@ class Affilync_Security_Encryption {
         }
 
         $master_key = $this->get_master_key();
+        $salt       = $this->get_salt();
 
         $this->derived_key = hash_pbkdf2(
             'sha256',
             $master_key,
-            self::SALT,
+            $salt,
             self::PBKDF2_ITERATIONS,
             self::KEY_LENGTH,
             true
