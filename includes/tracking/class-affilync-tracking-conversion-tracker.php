@@ -645,6 +645,11 @@ class Affilync_Tracking_Conversion_Tracker {
             'click_id'     => $attribution['click_id'] ?? '',
         );
 
+        // Build cache-busting parameters to prevent browser caching of the pixel.
+        // Without these, repeat purchases may not be tracked, leaving affiliates unpaid.
+        $cache_bust_timestamp = time();
+        $cache_bust_nonce     = wp_rand( 100000000, 999999999 );
+
         // Output conversion pixel script.
         ?>
         <script type="text/javascript">
@@ -658,10 +663,19 @@ class Affilync_Tracking_Conversion_Tracker {
                 '&aff=' + encodeURIComponent(data.affiliate_id) +
                 '&campaign=' + encodeURIComponent(data.campaign_id) +
                 '&click_id=' + encodeURIComponent(data.click_id) +
-                '&t=' + Date.now();
+                '&t=<?php echo esc_js( $cache_bust_timestamp ); ?>' +
+                '&nonce=<?php echo esc_js( $cache_bust_nonce ); ?>' +
+                '&cb=' + Date.now() + Math.random().toString(36).substring(2, 10);
+            img.setAttribute('fetchpriority', 'high');
         })();
         </script>
         <?php
+        // Emit HTTP headers to prevent proxy/CDN caching of this page fragment.
+        if ( ! headers_sent() ) {
+            header( 'Cache-Control: no-cache, no-store, must-revalidate' );
+            header( 'Pragma: no-cache' );
+            header( 'Expires: 0' );
+        }
 
         // Mark as rendered.
         $order->update_meta_data( '_affilync_pixel_rendered', 'yes' );
