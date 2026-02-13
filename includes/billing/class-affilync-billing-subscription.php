@@ -144,6 +144,9 @@ class Affilync_Billing_Subscription {
         // Cron for usage reset.
         add_action( 'affilync_reset_monthly_usage', array( $this, 'reset_monthly_usage' ) );
 
+        // PAY-IX-3: Cron for retrying failed usage sync.
+        add_action( 'affilync_retry_usage_sync', array( $this, 'retry_usage_sync' ) );
+
         // Schedule monthly usage reset if not scheduled.
         if ( ! wp_next_scheduled( 'affilync_reset_monthly_usage' ) ) {
             wp_schedule_event( strtotime( 'first day of next month midnight' ), 'monthly', 'affilync_reset_monthly_usage' );
@@ -446,8 +449,14 @@ class Affilync_Billing_Subscription {
 
     /**
      * Reset monthly usage (cron job).
+     *
+     * PAY-IX-3: After resetting local counters, syncs the reset with the
+     * Affilync API to prevent usage tracking drift. If the API call fails,
+     * schedules a retry via wp_cron.
      */
     public function reset_monthly_usage() {
+        $previous_usage = get_option( self::OPTION_USAGE, array() );
+
         $usage = array(
             'conversions'  => 0,
             'products'     => 0,
@@ -465,6 +474,129 @@ class Affilync_Billing_Subscription {
                 array( 'message' => 'Monthly usage counters reset' )
             );
         }
+
+        // PAY-IX-3: Sync usage reset with Affilync API.
+        $sync_result = $this->sync_usage_reset( $previous_usage );
+
+        if ( is_wp_error( $sync_result ) ) {
+            // Log the failure and schedule a retry.
+            if ( function_exists( 'affilync' ) && affilync()->audit_logger ) {
+                affilync()->audit_logger->warning(
+                    'usage_reset_sync_failed',
+                    array(
+                        'message' => 'Failed to sync usage reset with API, scheduling retry',
+                        'error'   => $sync_result->get_error_message(),
+                    )
+                );
+            }
+
+            // Store the previous usage data for the retry attempt.
+            update_option( 'affilync_pending_usage_sync', $previous_usage, false );
+
+            // Schedule retry in 5 minutes if not already scheduled.
+            if ( ! wp_next_scheduled( 'affilync_retry_usage_sync' ) ) {
+                wp_schedule_single_event( time() + 300, 'affilync_retry_usage_sync' );
+            }
+        }
+    }
+
+    /**
+     * Sync usage reset with the Affilync API.
+     *
+     * PAY-IX-3: Calls the Affilync API to notify that the local billing
+     * usage counters have been reset. This keeps the platform's usage
+     * records in sync with the WooCommerce plugin's local state.
+     *
+     * @param array $previous_usage The usage data before the reset.
+     * @return array|WP_Error API response or error.
+     */
+    public function sync_usage_reset( $previous_usage = array() ) {
+        $subscription = $this->get_subscription_status();
+        $site_url     = get_site_url();
+
+        $payload = array(
+            'site_url'       => $site_url,
+            'plan'           => $subscription['plan'],
+            'previous_usage' => array(
+                'conversions' => isset( $previous_usage['conversions'] ) ? intval( $previous_usage['conversions'] ) : 0,
+                'products'    => isset( $previous_usage['products'] ) ? intval( $previous_usage['products'] ) : 0,
+                'period_start' => isset( $previous_usage['period_start'] ) ? $previous_usage['period_start'] : null,
+                'period_end'   => isset( $previous_usage['period_end'] ) ? $previous_usage['period_end'] : null,
+            ),
+            'new_period'     => array(
+                'period_start' => gmdate( 'Y-m-01' ),
+                'period_end'   => gmdate( 'Y-m-t' ),
+            ),
+            'reset_at'       => gmdate( 'Y-m-d\TH:i:s\Z' ),
+        );
+
+        $result = $this->api_client->post( '/api/woocommerce/billing/usage-reset', $payload );
+
+        if ( ! is_wp_error( $result ) ) {
+            // Sync successful -- clear any pending sync data.
+            delete_option( 'affilync_pending_usage_sync' );
+
+            if ( function_exists( 'affilync' ) && affilync()->audit_logger ) {
+                affilync()->audit_logger->info(
+                    'usage_reset_synced',
+                    array( 'message' => 'Usage reset successfully synced with Affilync API' )
+                );
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Retry syncing usage reset with the API (wp_cron callback).
+     *
+     * PAY-IX-3: Called by wp_cron when the initial sync attempt failed.
+     * Retries up to 3 times with increasing delays (5 min, 15 min, 60 min).
+     */
+    public function retry_usage_sync() {
+        $previous_usage = get_option( 'affilync_pending_usage_sync', array() );
+
+        // Nothing to sync.
+        if ( empty( $previous_usage ) ) {
+            return;
+        }
+
+        $retry_count = isset( $previous_usage['_retry_count'] ) ? intval( $previous_usage['_retry_count'] ) : 0;
+
+        $result = $this->sync_usage_reset( $previous_usage );
+
+        if ( is_wp_error( $result ) ) {
+            $retry_count++;
+
+            if ( $retry_count >= 3 ) {
+                // Max retries reached -- log and give up.
+                if ( function_exists( 'affilync' ) && affilync()->audit_logger ) {
+                    affilync()->audit_logger->error(
+                        'usage_reset_sync_max_retries',
+                        array(
+                            'message'     => 'Usage reset sync failed after 3 retries',
+                            'error'       => $result->get_error_message(),
+                            'retry_count' => $retry_count,
+                        )
+                    );
+                }
+                delete_option( 'affilync_pending_usage_sync' );
+                return;
+            }
+
+            // Update retry count and schedule next attempt.
+            $previous_usage['_retry_count'] = $retry_count;
+            update_option( 'affilync_pending_usage_sync', $previous_usage, false );
+
+            // Increasing delay: 15 min for 2nd attempt, 60 min for 3rd.
+            $delays = array( 900, 3600 );
+            $delay  = isset( $delays[ $retry_count - 1 ] ) ? $delays[ $retry_count - 1 ] : 3600;
+
+            if ( ! wp_next_scheduled( 'affilync_retry_usage_sync' ) ) {
+                wp_schedule_single_event( time() + $delay, 'affilync_retry_usage_sync' );
+            }
+        }
+        // If sync succeeded, sync_usage_reset() already cleaned up the option.
     }
 
     /**
