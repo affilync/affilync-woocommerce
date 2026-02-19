@@ -382,8 +382,16 @@ class Affilync_Billing_Subscription {
         $usage = get_option( self::OPTION_USAGE, array() );
 
         $conversions = isset( $usage['conversions'] ) ? intval( $usage['conversions'] ) : 0;
-        $conversions++;
 
+        // Check limits BEFORE incrementing (PAY-XI-10).
+        $subscription = $this->get_subscription_status();
+        $limit        = $subscription['conversion_limit'];
+
+        if ( $limit !== -1 && $conversions >= $limit ) {
+            return false;
+        }
+
+        $conversions++;
         $usage['conversions'] = $conversions;
 
         // Set period if not set.
@@ -394,11 +402,7 @@ class Affilync_Billing_Subscription {
 
         update_option( self::OPTION_USAGE, $usage );
 
-        // Check if within limits.
-        $subscription = $this->get_subscription_status();
-        $limit        = $subscription['conversion_limit'];
-
-        return $limit === -1 || $conversions <= $limit;
+        return true;
     }
 
     /**
@@ -410,17 +414,21 @@ class Affilync_Billing_Subscription {
         $usage = get_option( self::OPTION_USAGE, array() );
 
         $products = isset( $usage['products'] ) ? intval( $usage['products'] ) : 0;
-        $products++;
 
+        // Check limits BEFORE incrementing (PAY-XI-10).
+        $subscription = $this->get_subscription_status();
+        $limit        = $subscription['product_limit'];
+
+        if ( $limit !== -1 && $products >= $limit ) {
+            return false;
+        }
+
+        $products++;
         $usage['products'] = $products;
 
         update_option( self::OPTION_USAGE, $usage );
 
-        // Check if within limits.
-        $subscription = $this->get_subscription_status();
-        $limit        = $subscription['product_limit'];
-
-        return $limit === -1 || $products <= $limit;
+        return true;
     }
 
     /**
