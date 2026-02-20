@@ -703,22 +703,33 @@ class Affilync_API_REST_Controller {
             );
         }
 
-        // Verify HMAC signature if present (trusted external callers sign requests).
+        // Verify HMAC signature (required for all conversion tracking requests).
         $signature = $request->get_header( 'X-Affilync-Signature' );
-        if ( $signature ) {
-            $body_raw = $request->get_body();
-            if ( ! $this->hmac_validator->validate( $body_raw, $signature ) ) {
-                $this->audit_logger->warning(
-                    Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
-                    array( 'action' => 'conversion_track', 'reason' => 'invalid_hmac' )
-                );
+        if ( ! $signature ) {
+            $this->audit_logger->warning(
+                Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
+                array( 'action' => 'conversion_track', 'reason' => 'missing_signature' )
+            );
 
-                return new WP_Error(
-                    'invalid_signature',
-                    __( 'Invalid request signature.', 'affilync-woocommerce' ),
-                    array( 'status' => 403 )
-                );
-            }
+            return new WP_Error(
+                'missing_signature',
+                __( 'X-Affilync-Signature header is required.', 'affilync-woocommerce' ),
+                array( 'status' => 403 )
+            );
+        }
+
+        $body_raw = $request->get_body();
+        if ( ! $this->hmac_validator->validate( $body_raw, $signature ) ) {
+            $this->audit_logger->warning(
+                Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
+                array( 'action' => 'conversion_track', 'reason' => 'invalid_hmac' )
+            );
+
+            return new WP_Error(
+                'invalid_signature',
+                __( 'Invalid request signature.', 'affilync-woocommerce' ),
+                array( 'status' => 403 )
+            );
         }
 
         // Extract validated and sanitized parameters.
