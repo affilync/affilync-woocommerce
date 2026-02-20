@@ -227,23 +227,89 @@ class Affilync_Tracking_Conversion_Tracker {
     /**
      * Calculate commission for an order.
      *
+     * SEC-XIV-04: Commission rate is fetched from the Affilync API (server-side
+     * authoritative source) or from plugin settings. It is NEVER read from
+     * cookies or client-side attribution data, as those can be tampered with
+     * by affiliates to set arbitrary commission rates.
+     *
      * @param WC_Order $order       Order object.
      * @param array    $attribution Attribution data.
      * @return float Commission amount.
      */
     private function calculate_commission( $order, $attribution ) {
-        // Default commission rate (can be customized).
-        $default_rate = 0.10; // 10%
+        // Default commission rate from plugin settings.
+        $settings     = get_option( 'affilync_settings', array() );
+        $default_rate = isset( $settings['default_commission_rate'] )
+            ? floatval( $settings['default_commission_rate'] )
+            : 0.10; // 10%
 
-        // Get rate from attribution if available.
-        $rate = isset( $attribution['commission_rate'] )
-            ? floatval( $attribution['commission_rate'] )
-            : $default_rate;
+        $rate = $default_rate;
+
+        // Attempt to fetch the authoritative commission rate from the Affilync
+        // API using the campaign ID. This is the brand's configured rate and
+        // cannot be manipulated by the affiliate.
+        $campaign_id = isset( $attribution['campaign_id'] ) ? sanitize_text_field( $attribution['campaign_id'] ) : '';
+
+        if ( ! empty( $campaign_id ) ) {
+            $api_rate = $this->get_campaign_commission_rate( $campaign_id );
+            if ( false !== $api_rate ) {
+                $rate = $api_rate;
+            }
+        }
+
+        // Clamp rate to a sane range (0% to 100%) as a safety net.
+        $rate = max( 0.0, min( 1.0, $rate ) );
 
         // Calculate commission on order subtotal (excluding tax and shipping).
         $subtotal = floatval( $order->get_subtotal() );
 
         return round( $subtotal * $rate, 2 );
+    }
+
+    /**
+     * Fetch the authoritative commission rate for a campaign from the Affilync API.
+     *
+     * SEC-XIV-04: The commission rate MUST come from the brand's campaign
+     * settings on the server, never from client-controlled data.
+     *
+     * Results are cached in a short-lived transient to avoid repeated API
+     * calls for orders placed in quick succession under the same campaign.
+     *
+     * @param string $campaign_id Campaign ID.
+     * @return float|false Commission rate (0.0-1.0) or false on failure.
+     */
+    private function get_campaign_commission_rate( $campaign_id ) {
+        // Check transient cache first (5-minute TTL).
+        $cache_key = 'affilync_campaign_rate_' . md5( $campaign_id );
+        $cached    = get_transient( $cache_key );
+        if ( false !== $cached ) {
+            return floatval( $cached );
+        }
+
+        // Fetch from API.
+        $result = $this->api_client->get( '/api/campaigns/' . urlencode( $campaign_id ) );
+
+        if ( is_wp_error( $result ) ) {
+            $this->audit_logger->warning(
+                'commission_rate_fetch_failed',
+                array(
+                    'campaign_id' => $campaign_id,
+                    'error'       => $result->get_error_message(),
+                    'fallback'    => 'default_rate',
+                )
+            );
+            return false;
+        }
+
+        // Extract commission rate from the campaign data.
+        if ( isset( $result['commission_rate'] ) ) {
+            $rate = floatval( $result['commission_rate'] );
+            // Cache for 5 minutes.
+            set_transient( $cache_key, $rate, 5 * MINUTE_IN_SECONDS );
+            return $rate;
+        }
+
+        return false;
     }
 
     /**
