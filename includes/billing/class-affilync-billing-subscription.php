@@ -351,8 +351,8 @@ class Affilync_Billing_Subscription {
         $products_remaining    = $product_limit === -1 ? -1 : max( 0, $product_limit - $products_used );
 
         // Calculate percentage.
-        $conversions_percentage = $conversion_limit === -1 ? 0 : intval( ( $conversions_used / $conversion_limit ) * 100 );
-        $products_percentage    = $product_limit === -1 ? 0 : intval( ( $products_used / $product_limit ) * 100 );
+        $conversions_percentage = $conversion_limit <= 0 ? 0 : intval( ( $conversions_used / $conversion_limit ) * 100 );
+        $products_percentage    = $product_limit <= 0 ? 0 : intval( ( $products_used / $product_limit ) * 100 );
 
         return array(
             'plan'        => $subscription['plan'],

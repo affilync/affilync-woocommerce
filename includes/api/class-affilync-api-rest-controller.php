@@ -404,7 +404,7 @@ class Affilync_API_REST_Controller {
         global $wpdb;
 
         $page   = $request->get_param( 'page' );
-        $limit  = min( $request->get_param( 'limit' ), 100 );
+        $limit  = max( 1, min( intval( $request->get_param( 'limit' ) ), 100 ) );
         $status = $request->get_param( 'status' );
         $offset = ( $page - 1 ) * $limit;
 
