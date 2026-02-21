@@ -163,10 +163,42 @@ class Affilync_Admin_Dashboard_Widget {
             </span>
         </div>
 
+        <?php
+        // Show call tracking stats if active.
+        if ( affilync()->call_tracker && affilync()->call_tracker->is_active() ) {
+            $call_stats = affilync()->call_tracker->stats->get_stats( $period );
+            ?>
+            <div class="affilync-widget-stats" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #dcdcde;">
+                <div class="affilync-stat">
+                    <span class="affilync-stat-value"><?php echo esc_html( $call_stats['total_calls'] ); ?></span>
+                    <span class="affilync-stat-label"><?php esc_html_e( 'Calls', 'affilync-woocommerce' ); ?></span>
+                </div>
+                <div class="affilync-stat">
+                    <span class="affilync-stat-value"><?php echo esc_html( $call_stats['qualified_calls'] ); ?></span>
+                    <span class="affilync-stat-label"><?php esc_html_e( 'Qualified', 'affilync-woocommerce' ); ?></span>
+                </div>
+                <div class="affilync-stat">
+                    <?php
+                    $avg = absint( $call_stats['avg_duration'] );
+                    $formatted = $avg < 60 ? $avg . 's' : floor( $avg / 60 ) . 'm ' . ( $avg % 60 ) . 's';
+                    ?>
+                    <span class="affilync-stat-value"><?php echo esc_html( $formatted ); ?></span>
+                    <span class="affilync-stat-label"><?php esc_html_e( 'Avg Duration', 'affilync-woocommerce' ); ?></span>
+                </div>
+            </div>
+            <?php
+        }
+        ?>
+
         <p style="margin-top: 15px;">
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=affilync-settings&tab=conversions' ) ); ?>" class="button">
                 <?php esc_html_e( 'View All Conversions', 'affilync-woocommerce' ); ?>
             </a>
+            <?php if ( affilync()->call_tracker && affilync()->call_tracker->is_active() ) : ?>
+                <a href="<?php echo esc_url( admin_url( 'admin.php?page=affilync-settings&tab=calls' ) ); ?>" class="button" style="margin-left: 5px;">
+                    <?php esc_html_e( 'View Calls', 'affilync-woocommerce' ); ?>
+                </a>
+            <?php endif; ?>
         </p>
         <?php
     }

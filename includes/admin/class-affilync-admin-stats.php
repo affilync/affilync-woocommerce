@@ -630,7 +630,13 @@ class Affilync_Admin_Stats {
                 $group_by   = '%Y-%m-%d';
         }
 
-        $column = $data_type === 'conversions' ? 'COUNT(*)' : "COALESCE(SUM({$data_type === 'revenue' ? 'order_total' : 'commission_amount'}), 0)";
+        if ( 'conversions' === $data_type ) {
+            $column = 'COUNT(*)';
+        } elseif ( 'revenue' === $data_type ) {
+            $column = 'COALESCE(SUM(order_total), 0)';
+        } else {
+            $column = 'COALESCE(SUM(commission_amount), 0)';
+        }
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         $results = $wpdb->get_results(

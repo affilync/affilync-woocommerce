@@ -191,6 +191,65 @@ class Affilync_Admin_Settings {
             )
         );
 
+        // Call tracking section.
+        add_settings_section(
+            'affilync_call_tracking',
+            __( 'Call Tracking', 'affilync-woocommerce' ),
+            array( $this, 'render_call_tracking_section' ),
+            self::PAGE_SLUG
+        );
+
+        add_settings_field(
+            'call_tracking_enabled',
+            __( 'Enable Call Tracking', 'affilync-woocommerce' ),
+            array( $this, 'render_checkbox_field' ),
+            self::PAGE_SLUG,
+            'affilync_call_tracking',
+            array(
+                'id'          => 'call_tracking_enabled',
+                'description' => __( 'Track affiliate-driven phone calls with Dynamic Number Insertion.', 'affilync-woocommerce' ),
+            )
+        );
+
+        add_settings_field(
+            'call_tracking_phone',
+            __( 'Merchant Phone Number', 'affilync-woocommerce' ),
+            array( $this, 'render_text_field' ),
+            self::PAGE_SLUG,
+            'affilync_call_tracking',
+            array(
+                'id'          => 'call_tracking_phone',
+                'description' => __( 'Your business phone number that will be swapped with tracking numbers.', 'affilync-woocommerce' ),
+                'placeholder' => '+1 (800) 555-1234',
+            )
+        );
+
+        add_settings_field(
+            'call_tracking_phone_selector',
+            __( 'Phone Element CSS Selector', 'affilync-woocommerce' ),
+            array( $this, 'render_text_field' ),
+            self::PAGE_SLUG,
+            'affilync_call_tracking',
+            array(
+                'id'          => 'call_tracking_phone_selector',
+                'description' => __( 'CSS selector for elements containing your phone number.', 'affilync-woocommerce' ),
+                'placeholder' => '[data-affilync-phone], a[href^="tel:"]',
+            )
+        );
+
+        add_settings_field(
+            'call_tracking_url',
+            __( 'Call Tracker URL', 'affilync-woocommerce' ),
+            array( $this, 'render_text_field' ),
+            self::PAGE_SLUG,
+            'affilync_call_tracking',
+            array(
+                'id'          => 'call_tracking_url',
+                'description' => __( 'Override the call tracker service URL (advanced).', 'affilync-woocommerce' ),
+                'placeholder' => AFFILYNC_CALL_TRACKER_URL,
+            )
+        );
+
         // Advanced section.
         add_settings_section(
             'affilync_advanced',
@@ -250,6 +309,22 @@ class Affilync_Admin_Settings {
             $sanitized['track_url_params'] = array_map( 'sanitize_key', $input['track_url_params'] );
         }
 
+        if ( isset( $input['call_tracking_enabled'] ) ) {
+            $sanitized['call_tracking_enabled'] = (bool) $input['call_tracking_enabled'];
+        }
+
+        if ( isset( $input['call_tracking_phone'] ) ) {
+            $sanitized['call_tracking_phone'] = sanitize_text_field( $input['call_tracking_phone'] );
+        }
+
+        if ( isset( $input['call_tracking_phone_selector'] ) ) {
+            $sanitized['call_tracking_phone_selector'] = sanitize_text_field( $input['call_tracking_phone_selector'] );
+        }
+
+        if ( isset( $input['call_tracking_url'] ) ) {
+            $sanitized['call_tracking_url'] = esc_url_raw( $input['call_tracking_url'] );
+        }
+
         return $sanitized;
     }
 
@@ -283,6 +358,12 @@ class Affilync_Admin_Settings {
                    class="nav-tab <?php echo $active_tab === 'products' ? 'nav-tab-active' : ''; ?>">
                     <?php esc_html_e( 'Products', 'affilync-woocommerce' ); ?>
                 </a>
+                <?php if ( affilync()->call_tracker ) : ?>
+                <a href="?page=<?php echo esc_attr( self::PAGE_SLUG ); ?>&tab=calls"
+                   class="nav-tab <?php echo $active_tab === 'calls' ? 'nav-tab-active' : ''; ?>">
+                    <?php esc_html_e( 'Calls', 'affilync-woocommerce' ); ?>
+                </a>
+                <?php endif; ?>
                 <a href="?page=<?php echo esc_attr( self::PAGE_SLUG ); ?>&tab=logs"
                    class="nav-tab <?php echo $active_tab === 'logs' ? 'nav-tab-active' : ''; ?>">
                     <?php esc_html_e( 'Logs', 'affilync-woocommerce' ); ?>
@@ -300,6 +381,9 @@ class Affilync_Admin_Settings {
                         break;
                     case 'products':
                         $this->render_products_tab();
+                        break;
+                    case 'calls':
+                        $this->render_calls_tab();
                         break;
                     case 'logs':
                         $this->render_logs_tab();
@@ -389,6 +473,41 @@ class Affilync_Admin_Settings {
                 <?php esc_html_e( 'Sync Now', 'affilync-woocommerce' ); ?>
             </button>
         </div>
+        <?php
+    }
+
+    /**
+     * Render call tracking section description.
+     */
+    public function render_call_tracking_section() {
+        $has_call_tracking = affilync()->subscription && affilync()->subscription->has_call_tracking();
+        if ( ! $has_call_tracking ) {
+            echo '<p class="description">';
+            esc_html_e( 'Call tracking requires a Starter plan or higher.', 'affilync-woocommerce' );
+            echo ' <a href="' . esc_url( admin_url( 'admin.php?page=affilync-settings&tab=license' ) ) . '">';
+            esc_html_e( 'Upgrade your plan', 'affilync-woocommerce' );
+            echo '</a></p>';
+            return;
+        }
+        echo '<p>' . esc_html__( 'Track affiliate-driven phone calls using Dynamic Number Insertion (DNI).', 'affilync-woocommerce' ) . '</p>';
+    }
+
+    /**
+     * Render text field.
+     *
+     * @param array $args Field arguments.
+     */
+    public function render_text_field( $args ) {
+        $settings    = get_option( 'affilync_settings', array() );
+        $value       = isset( $settings[ $args['id'] ] ) ? $settings[ $args['id'] ] : '';
+        $placeholder = isset( $args['placeholder'] ) ? $args['placeholder'] : '';
+        ?>
+        <input type="text"
+               name="affilync_settings[<?php echo esc_attr( $args['id'] ); ?>]"
+               value="<?php echo esc_attr( $value ); ?>"
+               placeholder="<?php echo esc_attr( $placeholder ); ?>"
+               class="regular-text" />
+        <p class="description"><?php echo esc_html( $args['description'] ); ?></p>
         <?php
     }
 
@@ -570,6 +689,108 @@ class Affilync_Admin_Settings {
             </button>
         </p>
         <?php
+    }
+
+    /**
+     * Render calls tab.
+     */
+    private function render_calls_tab() {
+        if ( ! affilync()->call_tracker ) {
+            echo '<p>' . esc_html__( 'Call tracking is not enabled.', 'affilync-woocommerce' ) . '</p>';
+            return;
+        }
+
+        $stats = affilync()->call_tracker->stats->get_stats( 'month' );
+        ?>
+        <div class="affilync-stats-cards">
+            <div class="stat-card">
+                <h3><?php esc_html_e( 'Total Calls', 'affilync-woocommerce' ); ?></h3>
+                <span class="stat-value"><?php echo esc_html( $stats['total_calls'] ); ?></span>
+            </div>
+            <div class="stat-card">
+                <h3><?php esc_html_e( 'Qualified Calls', 'affilync-woocommerce' ); ?></h3>
+                <span class="stat-value"><?php echo esc_html( $stats['qualified_calls'] ); ?></span>
+            </div>
+            <div class="stat-card">
+                <h3><?php esc_html_e( 'Avg Duration', 'affilync-woocommerce' ); ?></h3>
+                <span class="stat-value"><?php echo esc_html( $this->format_duration( $stats['avg_duration'] ) ); ?></span>
+            </div>
+            <div class="stat-card">
+                <h3><?php esc_html_e( 'Unique Callers', 'affilync-woocommerce' ); ?></h3>
+                <span class="stat-value"><?php echo esc_html( $stats['unique_callers'] ); ?></span>
+            </div>
+        </div>
+
+        <h2><?php esc_html_e( 'Recent Calls', 'affilync-woocommerce' ); ?></h2>
+        <?php $this->render_call_log_table(); ?>
+        <?php
+    }
+
+    /**
+     * Render the call log table.
+     */
+    private function render_call_log_table() {
+        $result = affilync()->call_tracker->call_log->get_calls( array(
+            'per_page' => 25,
+            'page'     => 1,
+        ) );
+
+        $calls = $result['calls'];
+        ?>
+        <table class="wp-list-table widefat fixed striped">
+            <thead>
+                <tr>
+                    <th><?php esc_html_e( 'Call ID', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Caller', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Tracking #', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Affiliate', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Duration', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Status', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Synced', 'affilync-woocommerce' ); ?></th>
+                    <th><?php esc_html_e( 'Date', 'affilync-woocommerce' ); ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if ( empty( $calls ) ) : ?>
+                    <tr>
+                        <td colspan="8"><?php esc_html_e( 'No calls recorded yet.', 'affilync-woocommerce' ); ?></td>
+                    </tr>
+                <?php else : ?>
+                    <?php foreach ( $calls as $call ) : ?>
+                        <tr>
+                            <td><code><?php echo esc_html( substr( $call->call_id, 0, 12 ) ); ?></code></td>
+                            <td><?php echo esc_html( $call->caller_number ?: '-' ); ?></td>
+                            <td><?php echo esc_html( $call->tracking_number ?: '-' ); ?></td>
+                            <td><?php echo esc_html( $call->affiliate_id ? substr( $call->affiliate_id, 0, 8 ) : '-' ); ?></td>
+                            <td><?php echo esc_html( $this->format_duration( $call->duration ) ); ?></td>
+                            <td><span class="status-<?php echo esc_attr( $call->status ); ?>"><?php echo esc_html( ucfirst( $call->status ) ); ?></span></td>
+                            <td><?php echo $call->synced_to_api ? '<span class="dashicons dashicons-yes"></span>' : '<span class="dashicons dashicons-no"></span>'; ?></td>
+                            <td><?php echo esc_html( $call->created_at ); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        <?php
+    }
+
+    /**
+     * Format a duration in seconds to a human-readable string.
+     *
+     * @param int $seconds Duration in seconds.
+     * @return string Formatted duration (e.g., "2m 30s").
+     */
+    private function format_duration( $seconds ) {
+        $seconds = absint( $seconds );
+
+        if ( $seconds < 60 ) {
+            return $seconds . 's';
+        }
+
+        $minutes = floor( $seconds / 60 );
+        $remaining = $seconds % 60;
+
+        return $minutes . 'm ' . $remaining . 's';
     }
 
     /**

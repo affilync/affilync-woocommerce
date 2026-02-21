@@ -2,6 +2,18 @@
 /**
  * Integration tests for OAuth flow.
  *
+ * Tests against the actual Affilync_API_OAuth public API:
+ *   - get_authorization_url()
+ *   - disconnect()
+ *   - get_redirect_uri()
+ *   - has_client_id()
+ *   - is_connected()
+ *   - get_status()
+ *
+ * Private methods tested via reflection:
+ *   - generate_code_verifier()
+ *   - generate_code_challenge()
+ *
  * @package Affilync_WooCommerce
  */
 
@@ -10,316 +22,290 @@
  */
 class Test_OAuth_Flow extends WP_UnitTestCase {
 
-    /**
-     * OAuth handler instance.
-     *
-     * @var Affilync_API_OAuth
-     */
-    private $oauth;
+	/**
+	 * OAuth handler instance.
+	 *
+	 * @var Affilync_API_OAuth
+	 */
+	private $oauth;
 
-    /**
-     * Mock nonce manager.
-     *
-     * @var Affilync_Security_Nonce_Manager
-     */
-    private $mock_nonce_manager;
+	/**
+	 * Mock nonce manager.
+	 *
+	 * @var Affilync_Security_Nonce_Manager
+	 */
+	private $mock_nonce_manager;
 
-    /**
-     * Mock encryption handler.
-     *
-     * @var Affilync_Security_Encryption
-     */
-    private $mock_encryption;
+	/**
+	 * Mock encryption handler.
+	 *
+	 * @var Affilync_Security_Encryption
+	 */
+	private $mock_encryption;
 
-    /**
-     * Mock API client.
-     *
-     * @var Affilync_API_Client
-     */
-    private $mock_api_client;
+	/**
+	 * Mock API client.
+	 *
+	 * @var Affilync_API_Client
+	 */
+	private $mock_api_client;
 
-    /**
-     * Set up test fixtures.
-     */
-    public function set_up() {
-        parent::set_up();
+	/**
+	 * Set up test fixtures.
+	 */
+	public function set_up() {
+		parent::set_up();
 
-        // Create mock objects.
-        $this->mock_nonce_manager = $this->createMock( Affilync_Security_Nonce_Manager::class );
-        $this->mock_encryption    = $this->createMock( Affilync_Security_Encryption::class );
-        $this->mock_api_client    = $this->createMock( Affilync_API_Client::class );
+		// Create mock objects.
+		$this->mock_nonce_manager = $this->createMock( Affilync_Security_Nonce_Manager::class );
+		$this->mock_encryption    = $this->createMock( Affilync_Security_Encryption::class );
+		$this->mock_api_client    = $this->createMock( Affilync_API_Client::class );
 
-        // Create OAuth instance.
-        $this->oauth = new Affilync_API_OAuth(
-            $this->mock_nonce_manager,
-            $this->mock_encryption,
-            $this->mock_api_client
-        );
+		// Create OAuth instance.
+		$this->oauth = new Affilync_API_OAuth(
+			$this->mock_nonce_manager,
+			$this->mock_encryption,
+			$this->mock_api_client
+		);
 
-        // Clear any stored OAuth data.
-        delete_option( 'affilync_access_token' );
-        delete_option( 'affilync_refresh_token' );
-        delete_option( 'affilync_brand_id' );
-    }
+		// Clear any stored OAuth data.
+		delete_option( 'affilync_connection_status' );
+		delete_option( 'affilync_brand_id' );
+		delete_option( 'affilync_api_credentials' );
+		delete_option( 'affilync_license_client_id' );
+	}
 
-    /**
-     * Tear down test fixtures.
-     */
-    public function tear_down() {
-        parent::tear_down();
+	/**
+	 * Tear down test fixtures.
+	 */
+	public function tear_down() {
+		parent::tear_down();
 
-        delete_option( 'affilync_access_token' );
-        delete_option( 'affilync_refresh_token' );
-        delete_option( 'affilync_brand_id' );
-    }
+		delete_option( 'affilync_connection_status' );
+		delete_option( 'affilync_brand_id' );
+		delete_option( 'affilync_api_credentials' );
+		delete_option( 'affilync_license_client_id' );
+	}
 
-    /**
-     * Test OAuth initiation generates PKCE parameters.
-     */
-    public function test_oauth_initiation_generates_pkce_params() {
-        $this->mock_nonce_manager
-            ->expects( $this->once() )
-            ->method( 'create_nonce' )
-            ->willReturn( 'test_state_nonce' );
+	/**
+	 * Test get_authorization_url returns error when client_id not configured.
+	 */
+	public function test_get_authorization_url_returns_error_without_client_id() {
+		$result = $this->oauth->get_authorization_url();
 
-        // Simulate initiating OAuth.
-        $result = $this->oauth->initiate_oauth();
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertEquals( 'client_id_missing', $result->get_error_code() );
+	}
 
-        $this->assertIsArray( $result );
-        $this->assertArrayHasKey( 'authorization_url', $result );
-        $this->assertArrayHasKey( 'state', $result );
-    }
+	/**
+	 * Test get_authorization_url generates valid URL with client_id.
+	 */
+	public function test_get_authorization_url_generates_url_with_client_id() {
+		// Set a license-based client ID.
+		update_option( 'affilync_license_client_id', 'test_client_id_123' );
 
-    /**
-     * Test OAuth callback validates state parameter.
-     */
-    public function test_oauth_callback_validates_state() {
-        // Attempt callback without valid state.
-        $this->mock_nonce_manager
-            ->expects( $this->once() )
-            ->method( 'verify_nonce' )
-            ->with( 'invalid_state' )
-            ->willReturn( false );
+		$this->mock_nonce_manager
+			->expects( $this->once() )
+			->method( 'create' )
+			->willReturn( 'test_state_nonce' );
 
-        $result = $this->oauth->handle_callback( 'auth_code', 'invalid_state' );
+		$this->mock_api_client
+			->method( 'get_api_url' )
+			->willReturn( 'https://api.affilync.com' );
 
-        $this->assertInstanceOf( WP_Error::class, $result );
-        $this->assertEquals( 'invalid_state', $result->get_error_code() );
-    }
+		$result = $this->oauth->get_authorization_url();
 
-    /**
-     * Test successful OAuth callback stores tokens.
-     */
-    public function test_successful_oauth_callback_stores_tokens() {
-        $this->mock_nonce_manager
-            ->expects( $this->once() )
-            ->method( 'verify_nonce' )
-            ->with( 'valid_state' )
-            ->willReturn( array( 'code_verifier' => 'test_verifier' ) );
+		$this->assertIsString( $result );
+		$this->assertStringStartsWith( 'https://api.affilync.com/oauth/authorize?', $result );
 
-        $this->mock_api_client
-            ->expects( $this->once() )
-            ->method( 'post' )
-            ->with(
-                '/api/woocommerce/oauth/token',
-                $this->callback( function( $data ) {
-                    return isset( $data['code'] ) &&
-                           isset( $data['code_verifier'] ) &&
-                           $data['grant_type'] === 'authorization_code';
-                })
-            )
-            ->willReturn( array(
-                'access_token'  => 'test_access_token',
-                'refresh_token' => 'test_refresh_token',
-                'brand_id'      => 'brand_123',
-                'expires_in'    => 3600,
-            ) );
+		// Parse URL and check required parameters.
+		$parsed = parse_url( $result );
+		parse_str( $parsed['query'] ?? '', $params );
 
-        $this->mock_encryption
-            ->expects( $this->exactly( 2 ) )
-            ->method( 'encrypt' )
-            ->willReturnCallback( function( $value ) {
-                return 'encrypted_' . $value;
-            });
+		$this->assertEquals( 'test_client_id_123', $params['client_id'] );
+		$this->assertEquals( 'code', $params['response_type'] );
+		$this->assertEquals( 'S256', $params['code_challenge_method'] );
+		$this->assertEquals( 'test_state_nonce', $params['state'] );
+		$this->assertArrayHasKey( 'code_challenge', $params );
+		$this->assertArrayHasKey( 'redirect_uri', $params );
+		$this->assertArrayHasKey( 'scope', $params );
+		$this->assertEquals( 'woocommerce', $params['platform'] );
+	}
 
-        $result = $this->oauth->handle_callback( 'auth_code', 'valid_state' );
+	/**
+	 * Test get_authorization_url returns error when nonce creation fails.
+	 */
+	public function test_get_authorization_url_returns_error_on_nonce_failure() {
+		update_option( 'affilync_license_client_id', 'test_client_id' );
 
-        $this->assertIsArray( $result );
-        $this->assertTrue( $result['success'] );
+		$this->mock_nonce_manager
+			->method( 'create' )
+			->willReturn( false );
 
-        // Verify tokens were stored.
-        $this->assertEquals( 'encrypted_test_access_token', get_option( 'affilync_access_token' ) );
-        $this->assertEquals( 'brand_123', get_option( 'affilync_brand_id' ) );
-    }
+		$this->mock_api_client
+			->method( 'get_api_url' )
+			->willReturn( 'https://api.affilync.com' );
 
-    /**
-     * Test OAuth callback handles API errors.
-     */
-    public function test_oauth_callback_handles_api_errors() {
-        $this->mock_nonce_manager
-            ->expects( $this->once() )
-            ->method( 'verify_nonce' )
-            ->willReturn( array( 'code_verifier' => 'test_verifier' ) );
+		$result = $this->oauth->get_authorization_url();
 
-        $this->mock_api_client
-            ->expects( $this->once() )
-            ->method( 'post' )
-            ->willReturn( new WP_Error( 'api_error', 'Token exchange failed' ) );
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertEquals( 'nonce_creation_failed', $result->get_error_code() );
+	}
 
-        $result = $this->oauth->handle_callback( 'auth_code', 'valid_state' );
+	/**
+	 * Test disconnect clears stored credentials and updates status.
+	 */
+	public function test_disconnect_clears_credentials() {
+		update_option( 'affilync_connection_status', 'connected' );
+		update_option( 'affilync_brand_id', 'brand_123' );
 
-        $this->assertInstanceOf( WP_Error::class, $result );
-        $this->assertEquals( 'api_error', $result->get_error_code() );
-    }
+		$this->mock_encryption
+			->expects( $this->once() )
+			->method( 'clear_credentials' );
 
-    /**
-     * Test disconnect clears stored credentials.
-     */
-    public function test_disconnect_clears_credentials() {
-        // Set up stored credentials.
-        update_option( 'affilync_access_token', 'encrypted_token' );
-        update_option( 'affilync_refresh_token', 'encrypted_refresh' );
-        update_option( 'affilync_brand_id', 'brand_123' );
+		$result = $this->oauth->disconnect();
 
-        $this->mock_api_client
-            ->expects( $this->once() )
-            ->method( 'post' )
-            ->with( '/api/woocommerce/oauth/revoke' )
-            ->willReturn( array( 'success' => true ) );
+		$this->assertTrue( $result );
+		$this->assertEquals( 'disconnected', get_option( 'affilync_connection_status' ) );
+		$this->assertFalse( get_option( 'affilync_brand_id' ) );
+	}
 
-        $result = $this->oauth->disconnect();
+	/**
+	 * Test get_redirect_uri returns admin URL with callback params.
+	 */
+	public function test_get_redirect_uri_format() {
+		$uri = $this->oauth->get_redirect_uri();
 
-        $this->assertTrue( $result );
-        $this->assertFalse( get_option( 'affilync_access_token' ) );
-        $this->assertFalse( get_option( 'affilync_refresh_token' ) );
-        $this->assertFalse( get_option( 'affilync_brand_id' ) );
-    }
+		$this->assertStringContainsString( 'wp-admin', $uri );
+		$this->assertStringContainsString( 'affilync-settings', $uri );
+		$this->assertStringContainsString( 'affilync_oauth=callback', $uri );
+	}
 
-    /**
-     * Test token refresh updates stored access token.
-     */
-    public function test_token_refresh_updates_access_token() {
-        update_option( 'affilync_refresh_token', 'encrypted_refresh_token' );
+	/**
+	 * Test has_client_id returns false when not configured.
+	 */
+	public function test_has_client_id_returns_false_when_not_configured() {
+		$this->assertFalse( $this->oauth->has_client_id() );
+	}
 
-        $this->mock_encryption
-            ->method( 'decrypt' )
-            ->with( 'encrypted_refresh_token' )
-            ->willReturn( 'refresh_token' );
+	/**
+	 * Test has_client_id returns true when license client ID is set.
+	 */
+	public function test_has_client_id_returns_true_with_license() {
+		update_option( 'affilync_license_client_id', 'some_client_id' );
 
-        $this->mock_api_client
-            ->expects( $this->once() )
-            ->method( 'post' )
-            ->with(
-                '/api/woocommerce/oauth/token',
-                $this->callback( function( $data ) {
-                    return $data['grant_type'] === 'refresh_token' &&
-                           $data['refresh_token'] === 'refresh_token';
-                })
-            )
-            ->willReturn( array(
-                'access_token' => 'new_access_token',
-                'expires_in'   => 3600,
-            ) );
+		$this->assertTrue( $this->oauth->has_client_id() );
+	}
 
-        $this->mock_encryption
-            ->method( 'encrypt' )
-            ->with( 'new_access_token' )
-            ->willReturn( 'encrypted_new_access_token' );
+	/**
+	 * Test is_connected delegates to encryption has_credentials.
+	 */
+	public function test_is_connected_delegates_to_encryption() {
+		$this->mock_encryption
+			->expects( $this->once() )
+			->method( 'has_credentials' )
+			->willReturn( false );
 
-        $result = $this->oauth->refresh_token();
+		$this->assertFalse( $this->oauth->is_connected() );
+	}
 
-        $this->assertTrue( $result );
-    }
+	/**
+	 * Test is_connected returns true when credentials exist.
+	 */
+	public function test_is_connected_returns_true_with_credentials() {
+		$this->mock_encryption
+			->method( 'has_credentials' )
+			->willReturn( true );
 
-    /**
-     * Test PKCE code verifier generation.
-     */
-    public function test_pkce_code_verifier_generation() {
-        $reflection = new ReflectionClass( $this->oauth );
-        $method = $reflection->getMethod( 'generate_code_verifier' );
-        $method->setAccessible( true );
+		$this->assertTrue( $this->oauth->is_connected() );
+	}
 
-        $verifier = $method->invoke( $this->oauth );
+	/**
+	 * Test get_status returns correct structure when disconnected.
+	 */
+	public function test_get_status_disconnected() {
+		$this->mock_encryption
+			->method( 'has_credentials' )
+			->willReturn( false );
 
-        // Code verifier should be 43-128 characters.
-        $this->assertGreaterThanOrEqual( 43, strlen( $verifier ) );
-        $this->assertLessThanOrEqual( 128, strlen( $verifier ) );
+		$status = $this->oauth->get_status();
 
-        // Should only contain unreserved characters.
-        $this->assertMatchesRegularExpression( '/^[A-Za-z0-9\-._~]+$/', $verifier );
-    }
+		$this->assertIsArray( $status );
+		$this->assertFalse( $status['connected'] );
+		$this->assertEquals( 'disconnected', $status['status'] );
+		$this->assertArrayHasKey( 'brand_id', $status );
+		$this->assertArrayHasKey( 'last_check', $status );
+	}
 
-    /**
-     * Test PKCE code challenge generation.
-     */
-    public function test_pkce_code_challenge_generation() {
-        $reflection = new ReflectionClass( $this->oauth );
-        $method = $reflection->getMethod( 'generate_code_challenge' );
-        $method->setAccessible( true );
+	/**
+	 * Test get_status returns correct structure when connected.
+	 */
+	public function test_get_status_connected() {
+		update_option( 'affilync_brand_id', 'brand_789' );
 
-        $verifier = 'test_code_verifier_1234567890';
-        $challenge = $method->invoke( $this->oauth, $verifier );
+		$this->mock_encryption
+			->method( 'has_credentials' )
+			->willReturn( true );
 
-        // Challenge should be base64url encoded SHA256 hash.
-        $this->assertNotEmpty( $challenge );
-        $this->assertNotEquals( $verifier, $challenge );
+		$status = $this->oauth->get_status();
 
-        // Should be URL-safe base64.
-        $this->assertMatchesRegularExpression( '/^[A-Za-z0-9\-_]+$/', $challenge );
-    }
+		$this->assertTrue( $status['connected'] );
+		$this->assertEquals( 'connected', $status['status'] );
+		$this->assertEquals( 'brand_789', $status['brand_id'] );
+	}
 
-    /**
-     * Test OAuth redirect URI construction.
-     */
-    public function test_oauth_redirect_uri_construction() {
-        $reflection = new ReflectionClass( $this->oauth );
-        $method = $reflection->getMethod( 'get_redirect_uri' );
-        $method->setAccessible( true );
+	/**
+	 * Test PKCE code verifier generation.
+	 */
+	public function test_pkce_code_verifier_generation() {
+		$reflection = new ReflectionClass( $this->oauth );
+		$method = $reflection->getMethod( 'generate_code_verifier' );
+		$method->setAccessible( true );
 
-        $uri = $method->invoke( $this->oauth );
+		$verifier = $method->invoke( $this->oauth );
 
-        $this->assertStringContainsString( 'affilync/v1/oauth/callback', $uri );
-        $this->assertStringStartsWith( home_url(), $uri );
-    }
+		// Code verifier should be 43-128 characters per RFC 7636.
+		$this->assertGreaterThanOrEqual( 43, strlen( $verifier ) );
+		$this->assertLessThanOrEqual( 128, strlen( $verifier ) );
 
-    /**
-     * Test authorization URL contains required parameters.
-     */
-    public function test_authorization_url_contains_required_params() {
-        $this->mock_nonce_manager
-            ->method( 'create_nonce' )
-            ->willReturn( 'test_state' );
+		// Should only contain unreserved characters (base64url).
+		$this->assertMatchesRegularExpression( '/^[A-Za-z0-9\-._~]+$/', $verifier );
+	}
 
-        $result = $this->oauth->initiate_oauth();
-        $url = $result['authorization_url'];
+	/**
+	 * Test PKCE code challenge generation.
+	 */
+	public function test_pkce_code_challenge_generation() {
+		$reflection = new ReflectionClass( $this->oauth );
+		$method = $reflection->getMethod( 'generate_code_challenge' );
+		$method->setAccessible( true );
 
-        // Parse URL and check parameters.
-        $parsed = wp_parse_url( $url );
-        parse_str( $parsed['query'] ?? '', $params );
+		$verifier  = 'test_code_verifier_1234567890';
+		$challenge = $method->invoke( $this->oauth, $verifier );
 
-        $this->assertArrayHasKey( 'client_id', $params );
-        $this->assertArrayHasKey( 'redirect_uri', $params );
-        $this->assertArrayHasKey( 'response_type', $params );
-        $this->assertArrayHasKey( 'scope', $params );
-        $this->assertArrayHasKey( 'state', $params );
-        $this->assertArrayHasKey( 'code_challenge', $params );
-        $this->assertArrayHasKey( 'code_challenge_method', $params );
+		// Challenge should be base64url encoded SHA256 hash.
+		$this->assertNotEmpty( $challenge );
+		$this->assertNotEquals( $verifier, $challenge );
 
-        $this->assertEquals( 'code', $params['response_type'] );
-        $this->assertEquals( 'S256', $params['code_challenge_method'] );
-    }
+		// Should be URL-safe base64 (no +, /, or = characters).
+		$this->assertMatchesRegularExpression( '/^[A-Za-z0-9\-_]+$/', $challenge );
 
-    /**
-     * Test connection status check.
-     */
-    public function test_is_connected_returns_correct_status() {
-        // Initially not connected.
-        $this->assertFalse( $this->oauth->is_connected() );
+		// Same verifier should produce same challenge (deterministic).
+		$challenge2 = $method->invoke( $this->oauth, $verifier );
+		$this->assertEquals( $challenge, $challenge2 );
+	}
 
-        // Simulate connection.
-        update_option( 'affilync_access_token', 'encrypted_token' );
-        update_option( 'affilync_brand_id', 'brand_123' );
+	/**
+	 * Test code verifier uniqueness.
+	 */
+	public function test_pkce_code_verifier_uniqueness() {
+		$reflection = new ReflectionClass( $this->oauth );
+		$method = $reflection->getMethod( 'generate_code_verifier' );
+		$method->setAccessible( true );
 
-        $this->assertTrue( $this->oauth->is_connected() );
-    }
+		$verifier1 = $method->invoke( $this->oauth );
+		$verifier2 = $method->invoke( $this->oauth );
+
+		$this->assertNotEquals( $verifier1, $verifier2 );
+	}
 }

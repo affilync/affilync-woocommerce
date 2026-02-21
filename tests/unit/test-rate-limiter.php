@@ -28,6 +28,13 @@ class Test_Rate_Limiter extends TestCase {
     protected function setUp(): void {
         parent::setUp();
 
+        // Clean up $_SERVER proxy headers between tests.
+        unset(
+            $_SERVER['HTTP_CF_CONNECTING_IP'],
+            $_SERVER['HTTP_X_FORWARDED_FOR'],
+            $_SERVER['HTTP_X_REAL_IP']
+        );
+
         require_once dirname( __DIR__, 2 ) . '/includes/security/class-affilync-security-rate-limiter.php';
 
         $this->limiter = new Affilync_Security_Rate_Limiter();

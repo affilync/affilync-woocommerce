@@ -24,7 +24,7 @@ class Test_HMAC_Validator extends TestCase {
      *
      * @var string
      */
-    private $test_secret = 'whsec_test_secret_key_for_testing';
+    private $test_secret = 'whsec_test_secret_for_phpunit';
 
     /**
      * Set up test fixtures.

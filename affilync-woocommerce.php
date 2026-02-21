@@ -54,10 +54,17 @@ define( 'AFFILYNC_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'AFFILYNC_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 
 /**
- * API Configuration.
+ * API Configuration (can be overridden in wp-config.php).
  */
-define( 'AFFILYNC_API_URL', 'https://api.affilync.com' );
-define( 'AFFILYNC_APP_URL', 'https://app.affilync.com' );
+if ( ! defined( 'AFFILYNC_API_URL' ) ) {
+    define( 'AFFILYNC_API_URL', 'https://api.affilync.com' );
+}
+if ( ! defined( 'AFFILYNC_APP_URL' ) ) {
+    define( 'AFFILYNC_APP_URL', 'https://app.affilync.com' );
+}
+if ( ! defined( 'AFFILYNC_CALL_TRACKER_URL' ) ) {
+    define( 'AFFILYNC_CALL_TRACKER_URL', 'https://call.affilync.com' );
+}
 
 /**
  * Autoloader for plugin classes.
@@ -82,8 +89,9 @@ spl_autoload_register( function( $class ) {
         'Affilync_Tracking'     => 'tracking',
         'Affilync_Sync'         => 'sync',
         'Affilync_Helper'       => 'helpers',
-        'Affilync_Billing'      => 'billing',
-        'Affilync_Verification' => 'verification',
+        'Affilync_Billing'       => 'billing',
+        'Affilync_CallTracking'  => 'calltracking',
+        'Affilync_Verification'  => 'verification',
         'Affilync_Notification' => 'notifications',
         'Affilync_License'      => 'licensing',
     );
@@ -231,6 +239,13 @@ final class Affilync_WooCommerce {
     public $multisite;
 
     /**
+     * Call tracker.
+     *
+     * @var Affilync_CallTracking_Tracker|null
+     */
+    public $call_tracker;
+
+    /**
      * Integrity checker.
      *
      * @var Affilync_Security_Integrity
@@ -303,6 +318,12 @@ final class Affilync_WooCommerce {
         // Billing classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/billing/class-affilync-billing-subscription.php';
 
+        // Call tracking classes.
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/calltracking/class-affilync-calltracking-call-log.php';
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/calltracking/class-affilync-calltracking-stats.php';
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/calltracking/class-affilync-calltracking-dni-injector.php';
+        require_once AFFILYNC_PLUGIN_DIR . 'includes/calltracking/class-affilync-calltracking-tracker.php';
+
         // Verification classes.
         require_once AFFILYNC_PLUGIN_DIR . 'includes/verification/class-affilync-verification-brand.php';
 
@@ -369,22 +390,27 @@ final class Affilync_WooCommerce {
         $this->encryption     = new Affilync_Security_Encryption();
         $this->audit_logger   = new Affilync_Security_Audit_Logger();
 
-        // Initialize integrity checker and verify plugin hasn't been tampered with.
-        $this->integrity = new Affilync_Security_Integrity( $this->audit_logger );
-        if ( ! $this->integrity->verify() ) {
-            // Plugin integrity compromised - show admin notice but don't block.
-            add_action( 'admin_notices', array( $this, 'integrity_violation_notice' ) );
+        // In dev mode, skip integrity and license checks entirely.
+        $is_dev_mode = defined( 'AFFILYNC_DEV_MODE' ) && AFFILYNC_DEV_MODE;
 
-            // In production mode, block execution.
-            if ( defined( 'AFFILYNC_PRODUCTION_MODE' ) && AFFILYNC_PRODUCTION_MODE ) {
-                $this->audit_logger->critical( 'integrity_block', array( 'action' => 'plugin_disabled' ) );
-                return;
+        // Initialize integrity checker and verify plugin hasn't been tampered with.
+        if ( ! $is_dev_mode ) {
+            $this->integrity = new Affilync_Security_Integrity( $this->audit_logger );
+            if ( ! $this->integrity->verify() ) {
+                // Plugin integrity compromised - show admin notice but don't block.
+                add_action( 'admin_notices', array( $this, 'integrity_violation_notice' ) );
+
+                // In production mode, block execution.
+                if ( defined( 'AFFILYNC_PRODUCTION_MODE' ) && AFFILYNC_PRODUCTION_MODE ) {
+                    $this->audit_logger->critical( 'integrity_block', array( 'action' => 'plugin_disabled' ) );
+                    return;
+                }
             }
         }
 
         // Initialize license manager and check validity.
         $this->license_manager = new Affilync_License_Manager( $this->encryption, $this->audit_logger );
-        $this->license_valid   = $this->license_manager->is_valid();
+        $this->license_valid   = $is_dev_mode || $this->license_manager->is_valid();
 
         // Check license status.
         if ( ! $this->license_valid ) {
@@ -429,6 +455,12 @@ final class Affilync_WooCommerce {
 
         // Initialize subscription billing.
         $this->subscription = new Affilync_Billing_Subscription( $this->api_client, $this->encryption );
+
+        // Initialize call tracking (conditionally).
+        $settings = get_option( 'affilync_settings', array() );
+        if ( ! empty( $settings['call_tracking_enabled'] ) ) {
+            $this->call_tracker = new Affilync_CallTracking_Tracker();
+        }
 
         // Initialize brand verification.
         $this->brand_verification = new Affilync_Verification_Brand( $this->api_client, $this->audit_logger );
@@ -971,6 +1003,32 @@ final class Affilync_WooCommerce {
             KEY used (used)
         ) $charset_collate;";
 
+        // Call log table.
+        $sql[] = "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}affilync_call_log (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            call_id varchar(64) NOT NULL,
+            tracking_number varchar(32) DEFAULT NULL,
+            caller_number varchar(32) DEFAULT NULL,
+            affiliate_id varchar(64) DEFAULT NULL,
+            campaign_id varchar(64) DEFAULT NULL,
+            duration int(11) NOT NULL DEFAULT 0,
+            billable_seconds int(11) NOT NULL DEFAULT 0,
+            status varchar(32) NOT NULL DEFAULT 'completed',
+            recording_url text DEFAULT NULL,
+            call_data longtext DEFAULT NULL,
+            synced_to_api tinyint(1) NOT NULL DEFAULT 0,
+            api_call_id varchar(64) DEFAULT NULL,
+            created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY call_id (call_id),
+            KEY affiliate_id (affiliate_id),
+            KEY campaign_id (campaign_id),
+            KEY status (status),
+            KEY synced_to_api (synced_to_api),
+            KEY created_at (created_at)
+        ) $charset_collate;";
+
         // Webhook queue table for persistent delivery with retries.
         $sql[] = "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}affilync_webhook_queue (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -1084,6 +1142,21 @@ final class Affilync_WooCommerce {
                 gmdate( 'Y-m-d H:i:s', strtotime( '-30 days' ) )
             )
         );
+
+        // Clean synced call logs older than 90 days.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $call_table_exists = $wpdb->get_var(
+            $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->prefix . 'affilync_call_log' )
+        );
+        if ( $call_table_exists ) {
+            $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$wpdb->prefix}affilync_call_log
+                     WHERE synced_to_api = 1 AND created_at < %s",
+                    gmdate( 'Y-m-d H:i:s', strtotime( '-90 days' ) )
+                )
+            );
+        }
     }
 
     /**

@@ -278,6 +278,8 @@ class Affilync_API_Webhook_Handler {
             'campaign.paused'         => array( $this, 'handle_campaign_paused' ),
             'affiliate.joined'        => array( $this, 'handle_affiliate_joined' ),
             'link.clicked'            => array( $this, 'handle_link_clicked' ),
+            'call.completed'          => array( $this, 'handle_call_completed' ),
+            'call.recording'          => array( $this, 'handle_call_recording' ),
         );
 
         if ( isset( $handlers[ $event_type ] ) ) {
@@ -457,6 +459,103 @@ class Affilync_API_Webhook_Handler {
     private function handle_link_clicked( $payload ) {
         // Click event - typically handled by click tracker.
         return array( 'status' => 'acknowledged' );
+    }
+
+    /**
+     * Handle call.completed event.
+     *
+     * Stores the CDR data in the local call log table.
+     *
+     * @param array $payload Event payload.
+     * @return array Result.
+     */
+    private function handle_call_completed( $payload ) {
+        // Check if call tracking is active.
+        if ( ! affilync()->call_tracker ) {
+            return array( 'status' => 'skipped', 'reason' => 'call_tracking_disabled' );
+        }
+
+        $call_log = affilync()->call_tracker->call_log;
+
+        $call_id = isset( $payload['call_id'] ) ? sanitize_text_field( wp_unslash( $payload['call_id'] ) ) : '';
+
+        if ( empty( $call_id ) ) {
+            return array( 'status' => 'skipped', 'reason' => 'no_call_id' );
+        }
+
+        // Check for duplicate.
+        if ( $call_log->is_duplicate( $call_id ) ) {
+            return array( 'status' => 'duplicate', 'call_id' => $call_id );
+        }
+
+        // Extract CDR fields from payload.
+        $call_data = array(
+            'call_id'          => $call_id,
+            'tracking_number'  => isset( $payload['dialed'] ) ? sanitize_text_field( wp_unslash( $payload['dialed'] ) ) : '',
+            'caller_number'    => isset( $payload['caller'] ) ? sanitize_text_field( wp_unslash( $payload['caller'] ) ) : '',
+            'affiliate_id'     => isset( $payload['affiliate_id'] ) ? sanitize_text_field( wp_unslash( $payload['affiliate_id'] ) ) : null,
+            'campaign_id'      => isset( $payload['campaign_id'] ) ? sanitize_text_field( wp_unslash( $payload['campaign_id'] ) ) : null,
+            'duration'         => isset( $payload['duration'] ) ? absint( $payload['duration'] ) : 0,
+            'billable_seconds' => isset( $payload['billsec'] ) ? absint( $payload['billsec'] ) : ( isset( $payload['duration'] ) ? absint( $payload['duration'] ) : 0 ),
+            'status'           => isset( $payload['status'] ) ? sanitize_key( wp_unslash( $payload['status'] ) ) : 'completed',
+            'recording_url'    => isset( $payload['recording_url'] ) ? esc_url_raw( $payload['recording_url'] ) : null,
+            'call_data'        => $payload,
+            'synced_to_api'    => 1,
+            'api_call_id'      => $call_id,
+        );
+
+        $log_id = $call_log->store_call( $call_data );
+
+        if ( ! $log_id ) {
+            return array( 'status' => 'error', 'reason' => 'insert_failed' );
+        }
+
+        return array(
+            'status'  => 'processed',
+            'call_id' => $call_id,
+            'log_id'  => $log_id,
+        );
+    }
+
+    /**
+     * Handle call.recording event.
+     *
+     * Updates the recording URL on an existing call record.
+     *
+     * @param array $payload Event payload.
+     * @return array Result.
+     */
+    private function handle_call_recording( $payload ) {
+        // Check if call tracking is active.
+        if ( ! affilync()->call_tracker ) {
+            return array( 'status' => 'skipped', 'reason' => 'call_tracking_disabled' );
+        }
+
+        $call_log = affilync()->call_tracker->call_log;
+
+        $call_id       = isset( $payload['call_id'] ) ? sanitize_text_field( wp_unslash( $payload['call_id'] ) ) : '';
+        $recording_url = isset( $payload['recording_url'] ) ? esc_url_raw( $payload['recording_url'] ) : '';
+
+        if ( empty( $call_id ) || empty( $recording_url ) ) {
+            return array( 'status' => 'skipped', 'reason' => 'missing_fields' );
+        }
+
+        // Find the existing call record.
+        $call = $call_log->get_call_by_call_id( $call_id );
+
+        if ( ! $call ) {
+            return array( 'status' => 'skipped', 'reason' => 'call_not_found', 'call_id' => $call_id );
+        }
+
+        $call_log->update_call( $call->id, array(
+            'recording_url' => $recording_url,
+        ) );
+
+        return array(
+            'status'  => 'processed',
+            'call_id' => $call_id,
+            'log_id'  => $call->id,
+        );
     }
 
     /**

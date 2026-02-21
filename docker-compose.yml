@@ -1,0 +1,63 @@
+services:
+  wordpress:
+    image: wordpress:6.4-php8.2-apache
+    container_name: affilync-woocommerce-wp
+    ports:
+      - "8080:80"
+    environment:
+      WORDPRESS_DB_HOST: wp-db:3306
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DEBUG: "1"
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_DEBUG_LOG', true);
+        define('WP_DEBUG_DISPLAY', true);
+        define('SCRIPT_DEBUG', true);
+        define('AFFILYNC_API_URL', 'http://affilync-api-local:8000');
+        define('AFFILYNC_OAUTH_URL', 'http://localhost:8000');
+        define('AFFILYNC_CLIENT_ID', 'woocommerce_dev_client');
+        define('AFFILYNC_DEV_MODE', true);
+        define('AFFILYNC_ENCRYPTION_KEY', 'dev-encryption-key-not-for-production-use-1234567890abcdef');
+    volumes:
+      # Mount plugin source code directly (live reload on changes)
+      - ./:/var/www/html/wp-content/plugins/affilync-woocommerce
+      # Persist WordPress files
+      - wp_data:/var/www/html
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - wp-internal
+      - affilync-local
+
+  wp-db:
+    image: mysql:8.0
+    container_name: affilync-woocommerce-db
+    environment:
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: wordpress
+      MYSQL_ROOT_PASSWORD: rootpassword
+    volumes:
+      - wp_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - wp-internal
+
+volumes:
+  wp_data:
+  wp_db_data:
+
+networks:
+  wp-internal:
+    driver: bridge
+  affilync-local:
+    external: true
+    name: codex_affilync-local

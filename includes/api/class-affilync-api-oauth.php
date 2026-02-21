@@ -117,7 +117,10 @@ class Affilync_API_OAuth {
         }
 
         // Build authorization URL.
-        $api_url = $this->api_client->get_api_url();
+        // Use AFFILYNC_OAUTH_URL for browser-facing redirects (may differ from
+        // AFFILYNC_API_URL in Docker dev environments where the API is reached
+        // via an internal hostname for server-to-server calls).
+        $api_url = defined( 'AFFILYNC_OAUTH_URL' ) ? AFFILYNC_OAUTH_URL : $this->api_client->get_api_url();
         $params  = array(
             'client_id'             => $client_id,
             'redirect_uri'          => $this->get_redirect_uri(),

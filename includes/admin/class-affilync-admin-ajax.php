@@ -120,6 +120,7 @@ class Affilync_Admin_Ajax {
         add_action( 'wp_ajax_affilync_sync_conversions', array( $this, 'ajax_sync_conversions' ) );
         add_action( 'wp_ajax_affilync_get_dashboard_stats', array( $this, 'ajax_get_dashboard_stats' ) );
         add_action( 'wp_ajax_affilync_manage_webhooks', array( $this, 'ajax_manage_webhooks' ) );
+        add_action( 'wp_ajax_affilync_get_call_logs', array( $this, 'ajax_get_call_logs' ) );
 
         // Enqueue scripts on Affilync admin pages.
         add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_scripts' ) );
@@ -1039,6 +1040,103 @@ class Affilync_Admin_Ajax {
                 $webhook_log_id
             ),
             'webhook_id' => $webhook_log_id,
+        ) );
+    }
+
+    // ========================================================================
+    // 6. Call Logs AJAX
+    // ========================================================================
+
+    /**
+     * AJAX handler: Get call logs with pagination and filtering.
+     *
+     * Parameters:
+     *   - page (int): Page number (default 1)
+     *   - per_page (int): Results per page (default 20, max 100)
+     *   - affiliate_id (string): Filter by affiliate ID
+     *   - date_from (string): Start date in Y-m-d format
+     *   - date_to (string): End date in Y-m-d format
+     *   - status (string): Filter by call status
+     */
+    public function ajax_get_call_logs() {
+        check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'affilync-woocommerce' ) ) );
+        }
+
+        if ( ! affilync()->call_tracker ) {
+            wp_send_json_error( array(
+                'message' => __( 'Call tracking is not enabled.', 'affilync-woocommerce' ),
+            ) );
+        }
+
+        $page         = isset( $_POST['page'] ) ? absint( wp_unslash( $_POST['page'] ) ) : 1;
+        $per_page     = isset( $_POST['per_page'] ) ? min( absint( wp_unslash( $_POST['per_page'] ) ), 100 ) : 20;
+        $affiliate_id = isset( $_POST['affiliate_id'] ) ? sanitize_text_field( wp_unslash( $_POST['affiliate_id'] ) ) : '';
+        $date_from    = isset( $_POST['date_from'] ) ? sanitize_text_field( wp_unslash( $_POST['date_from'] ) ) : '';
+        $date_to      = isset( $_POST['date_to'] ) ? sanitize_text_field( wp_unslash( $_POST['date_to'] ) ) : '';
+        $status       = isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : '';
+
+        // Validate dates.
+        if ( $date_from && ! $this->validate_date( $date_from ) ) {
+            wp_send_json_error( array(
+                'message' => __( 'Invalid start date format. Use Y-m-d.', 'affilync-woocommerce' ),
+            ) );
+        }
+        if ( $date_to && ! $this->validate_date( $date_to ) ) {
+            wp_send_json_error( array(
+                'message' => __( 'Invalid end date format. Use Y-m-d.', 'affilync-woocommerce' ),
+            ) );
+        }
+
+        $result = affilync()->call_tracker->call_log->get_calls( array(
+            'per_page'     => $per_page,
+            'page'         => $page,
+            'affiliate_id' => $affiliate_id,
+            'date_from'    => $date_from,
+            'date_to'      => $date_to,
+            'status'       => $status,
+        ) );
+
+        $calls = array();
+        foreach ( $result['calls'] as $call ) {
+            $calls[] = array(
+                'id'               => (int) $call->id,
+                'call_id'          => $call->call_id,
+                'tracking_number'  => $call->tracking_number,
+                'caller_number'    => $call->caller_number,
+                'affiliate_id'     => $call->affiliate_id,
+                'campaign_id'      => $call->campaign_id,
+                'duration'         => (int) $call->duration,
+                'billable_seconds' => (int) $call->billable_seconds,
+                'status'           => $call->status,
+                'recording_url'    => $call->recording_url,
+                'synced_to_api'    => (bool) $call->synced_to_api,
+                'created_at'       => $call->created_at,
+            );
+        }
+
+        // Get stats for the current filter period.
+        $period = 'all';
+        if ( $date_from || $date_to ) {
+            $period = 'all'; // Custom date range — stats use the full query.
+        }
+        $stats = affilync()->call_tracker->stats->get_stats( $period );
+
+        wp_send_json_success( array(
+            'calls'      => $calls,
+            'total'      => $result['total'],
+            'page'       => $page,
+            'per_page'   => $per_page,
+            'total_pages' => ceil( $result['total'] / $per_page ),
+            'stats'      => $stats,
+            'filters'    => array(
+                'affiliate_id' => $affiliate_id,
+                'date_from'    => $date_from,
+                'date_to'      => $date_to,
+                'status'       => $status,
+            ),
         ) );
     }
 

@@ -41,13 +41,15 @@ class Affilync_Billing_Subscription {
      */
     const PLANS = array(
         'free' => array(
-            'name'             => 'Free',
-            'price'            => 0,
-            'price_display'    => 'Free',
-            'trial_days'       => 0,
-            'conversion_limit' => 50,
-            'product_limit'    => 100,
-            'features'         => array(
+            'name'               => 'Free',
+            'price'              => 0,
+            'price_display'      => 'Free',
+            'trial_days'         => 0,
+            'conversion_limit'   => 50,
+            'product_limit'      => 100,
+            'call_tracking'      => false,
+            'call_tracking_dni'  => false,
+            'features'           => array(
                 'Up to 50 conversions/month',
                 'Basic conversion tracking',
                 'Manual product sync',
@@ -55,47 +57,56 @@ class Affilync_Billing_Subscription {
             ),
         ),
         'starter' => array(
-            'name'             => 'Starter',
-            'price'            => 29,
-            'price_display'    => '$29/month',
-            'trial_days'       => 14,
-            'conversion_limit' => 500,
-            'product_limit'    => 1000,
-            'features'         => array(
+            'name'               => 'Starter',
+            'price'              => 29,
+            'price_display'      => '$29/month',
+            'trial_days'         => 14,
+            'conversion_limit'   => 500,
+            'product_limit'      => 1000,
+            'call_tracking'      => true,
+            'call_tracking_dni'  => false,
+            'features'           => array(
                 'Up to 500 conversions/month',
                 'Advanced attribution',
                 'Automatic product sync',
                 'Webhook notifications',
+                'Basic call tracking',
                 'Priority support',
             ),
         ),
         'pro' => array(
-            'name'             => 'Pro',
-            'price'            => 99,
-            'price_display'    => '$99/month',
-            'trial_days'       => 14,
-            'conversion_limit' => 5000,
-            'product_limit'    => 10000,
-            'features'         => array(
+            'name'               => 'Pro',
+            'price'              => 99,
+            'price_display'      => '$99/month',
+            'trial_days'         => 14,
+            'conversion_limit'   => 5000,
+            'product_limit'      => 10000,
+            'call_tracking'      => true,
+            'call_tracking_dni'  => true,
+            'features'           => array(
                 'Up to 5,000 conversions/month',
                 'Multi-touch attribution',
                 'Real-time sync',
                 'Custom webhooks',
+                'Advanced call tracking with DNI widget',
                 'API access',
                 'Dedicated support',
             ),
         ),
         'enterprise' => array(
-            'name'             => 'Enterprise',
-            'price'            => 299,
-            'price_display'    => '$299/month',
-            'trial_days'       => 30,
-            'conversion_limit' => -1, // Unlimited
-            'product_limit'    => -1, // Unlimited
-            'features'         => array(
+            'name'               => 'Enterprise',
+            'price'              => 299,
+            'price_display'      => '$299/month',
+            'trial_days'         => 30,
+            'conversion_limit'   => -1, // Unlimited
+            'product_limit'      => -1, // Unlimited
+            'call_tracking'      => true,
+            'call_tracking_dni'  => true,
+            'features'           => array(
                 'Unlimited conversions',
                 'Unlimited products',
                 'Custom integration',
+                'Advanced call tracking with DNI widget',
                 'SLA guarantee',
                 'Dedicated account manager',
                 'Priority API access',
@@ -453,6 +464,32 @@ class Affilync_Billing_Subscription {
         $products = $usage['products'];
 
         return $products['limit'] === -1 || $products['used'] < $products['limit'];
+    }
+
+    /**
+     * Check if the current plan includes call tracking.
+     *
+     * @return bool True if call tracking is available.
+     */
+    public function has_call_tracking() {
+        $status  = $this->get_subscription_status();
+        $plan_id = $status['plan'];
+        $plan    = isset( self::PLANS[ $plan_id ] ) ? self::PLANS[ $plan_id ] : self::PLANS['free'];
+
+        return ! empty( $plan['call_tracking'] );
+    }
+
+    /**
+     * Check if the current plan includes the full DNI widget.
+     *
+     * @return bool True if DNI widget is available (Pro+).
+     */
+    public function has_call_tracking_dni() {
+        $status  = $this->get_subscription_status();
+        $plan_id = $status['plan'];
+        $plan    = isset( self::PLANS[ $plan_id ] ) ? self::PLANS[ $plan_id ] : self::PLANS['free'];
+
+        return ! empty( $plan['call_tracking_dni'] );
     }
 
     /**

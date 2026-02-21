@@ -154,7 +154,7 @@ class Test_Encryption extends TestCase {
         $token = 'sk_live_abcdefghij123456';
 
         $masked = $this->encryption->mask_token( $token, 4 );
-        $this->assertEquals( '***************3456', $masked );
+        $this->assertEquals( str_repeat( '*', strlen( $token ) - 4 ) . '3456', $masked );
     }
 
     /**
