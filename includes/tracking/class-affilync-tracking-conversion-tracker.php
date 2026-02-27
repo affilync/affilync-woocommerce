@@ -516,11 +516,15 @@ class Affilync_Tracking_Conversion_Tracker {
      * @param int    $order_id          WooCommerce order ID.
      */
     public function async_notify_refund_callback( $api_conversion_id, $status, $order_id ) {
+        // Idempotency key prevents duplicate refund processing on retry.
+        $idempotency_key = hash( 'sha256', "refund:{$api_conversion_id}:{$order_id}:{$status}" );
+
         $result = $this->api_client->post(
             '/api/conversions/' . $api_conversion_id . '/refund',
             array(
-                'status'   => $status,
-                'order_id' => $order_id,
+                'status'          => $status,
+                'order_id'        => $order_id,
+                'idempotency_key' => $idempotency_key,
             )
         );
 
