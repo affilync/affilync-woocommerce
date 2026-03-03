@@ -719,7 +719,7 @@ class Affilync_API_REST_Controller {
         }
 
         $body_raw = $request->get_body();
-        if ( ! $this->hmac_validator->validate( $body_raw, $signature ) ) {
+        if ( ! $this->hmac_validator->verify( $body_raw, $signature ) ) {
             $this->audit_logger->warning(
                 Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
                 array( 'action' => 'conversion_track', 'reason' => 'invalid_hmac' )

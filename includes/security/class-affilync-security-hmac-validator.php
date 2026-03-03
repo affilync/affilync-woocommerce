@@ -219,8 +219,15 @@ class Affilync_Security_HMAC_Validator {
             );
         }
 
-        // Get optional timestamp header.
+        // Get timestamp header (mandatory for replay attack prevention).
         $timestamp = $this->get_header( self::TIMESTAMP_HEADER );
+        if ( empty( $timestamp ) ) {
+            return array(
+                'valid'   => false,
+                'error'   => 'Missing timestamp header',
+                'payload' => $payload,
+            );
+        }
 
         // Verify.
         $result = $this->verify( $payload, $signature, $timestamp );

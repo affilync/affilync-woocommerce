@@ -22,6 +22,14 @@ if ( ! defined( 'COOKIEPATH' ) ) {
     define( 'COOKIEPATH', '/' );
 }
 
+if ( ! defined( 'ARRAY_A' ) ) {
+    define( 'ARRAY_A', 'ARRAY_A' );
+}
+
+if ( ! defined( 'OBJECT_K' ) ) {
+    define( 'OBJECT_K', 'OBJECT_K' );
+}
+
 if ( ! defined( 'COOKIE_DOMAIN' ) ) {
     define( 'COOKIE_DOMAIN', '' );
 }
@@ -135,6 +143,18 @@ if ( ! function_exists( '__' ) ) {
 if ( ! function_exists( 'esc_html__' ) ) {
     function esc_html__( $text, $domain = 'default' ) {
         return esc_html( $text );
+    }
+}
+
+if ( ! function_exists( 'esc_html_e' ) ) {
+    function esc_html_e( $text, $domain = 'default' ) {
+        echo esc_html( $text );
+    }
+}
+
+if ( ! function_exists( '_e' ) ) {
+    function _e( $text, $domain = 'default' ) {
+        echo $text;
     }
 }
 
@@ -330,7 +350,7 @@ if ( ! function_exists( 'add_query_arg' ) ) {
 
 if ( ! function_exists( 'current_user_can' ) ) {
     function current_user_can( $capability, ...$args ) {
-        return true;
+        return isset( $GLOBALS['affilync_test_user_cap'] ) ? (bool) $GLOBALS['affilync_test_user_cap'] : true;
     }
 }
 
@@ -343,40 +363,36 @@ if ( ! function_exists( 'wc_get_order' ) ) {
 if ( ! class_exists( 'WP_REST_Response' ) ) {
     class WP_REST_Response {
         public $data;
-        public $status;
-        public function __construct( $data = null, $status = 200 ) {
-            $this->data   = $data;
-            $this->status = $status;
+        public $status = 200;
+        public $headers = array();
+        public function __construct( $data = null, $status = 200, $headers = array() ) {
+            $this->data    = $data;
+            $this->status  = $status;
+            $this->headers = $headers;
         }
-        public function get_data() {
-            return $this->data;
-        }
-        public function get_status() {
-            return $this->status;
-        }
+        public function set_status( $code ) { $this->status = $code; }
+        public function header( $key, $value ) { $this->headers[ $key ] = $value; }
+        public function get_data() { return $this->data; }
+        public function get_status() { return $this->status; }
     }
 }
 
 if ( ! class_exists( 'WP_REST_Request' ) ) {
     class WP_REST_Request {
         private $params = array();
+        private $headers = array();
         private $body = '';
+        private $json_params = array();
         public function __construct( $method = 'GET', $route = '' ) {}
-        public function set_body( $body ) {
-            $this->body = $body;
-        }
-        public function get_body() {
-            return $this->body;
-        }
-        public function set_param( $key, $value ) {
-            $this->params[ $key ] = $value;
-        }
-        public function get_param( $key ) {
-            return isset( $this->params[ $key ] ) ? $this->params[ $key ] : null;
-        }
-        public function get_params() {
-            return $this->params;
-        }
+        public function set_body( $body ) { $this->body = $body; }
+        public function get_body() { return $this->body; }
+        public function set_param( $key, $value ) { $this->params[ $key ] = $value; }
+        public function get_param( $key ) { return isset( $this->params[ $key ] ) ? $this->params[ $key ] : null; }
+        public function get_params() { return $this->params; }
+        public function set_header( $key, $value ) { $this->headers[ strtolower( $key ) ] = $value; }
+        public function get_header( $key ) { return isset( $this->headers[ strtolower( $key ) ] ) ? $this->headers[ strtolower( $key ) ] : null; }
+        public function set_json_params( $params ) { $this->json_params = $params; }
+        public function get_json_params() { return $this->json_params; }
     }
 }
 
@@ -418,6 +434,13 @@ if ( ! function_exists( 'wp_parse_url' ) ) {
 
 if ( ! function_exists( 'register_rest_route' ) ) {
     function register_rest_route( $namespace, $route, $args = array(), $override = false ) {
+        if ( ! isset( $GLOBALS['affilync_registered_routes'] ) ) {
+            $GLOBALS['affilync_registered_routes'] = array();
+        }
+        $GLOBALS['affilync_registered_routes'][] = array(
+            'namespace' => $namespace,
+            'route'     => $route,
+        );
         return true;
     }
 }
@@ -488,9 +511,10 @@ if ( ! function_exists( 'wp_kses_post' ) ) {
     }
 }
 
-// Mock $wpdb global.
-if ( ! isset( $GLOBALS['wpdb'] ) || null === $GLOBALS['wpdb'] ) {
-    $GLOBALS['wpdb'] = new class {
+// Mock $wpdb global — named class so it can be serialized by PHPUnit
+// when running tests in separate processes.
+if ( ! class_exists( 'Affilync_Mock_Wpdb' ) ) {
+    class Affilync_Mock_Wpdb {
         public $prefix = 'wp_';
         public $last_error = '';
         public $insert_id = 0;
@@ -501,7 +525,17 @@ if ( ! isset( $GLOBALS['wpdb'] ) || null === $GLOBALS['wpdb'] ) {
         }
 
         public function prepare( $query, ...$args ) {
-            return vsprintf( str_replace( '%s', "'%s'", $query ), $args );
+            // WordPress accepts both prepare($q, $a, $b) and prepare($q, array($a, $b)).
+            if ( count( $args ) === 1 && is_array( $args[0] ) ) {
+                $args = $args[0];
+            }
+            // Replace %d and %s placeholders safely.
+            $i = 0;
+            return preg_replace_callback( '/%[sd]/', function( $m ) use ( $args, &$i ) {
+                $val = isset( $args[ $i ] ) ? $args[ $i ] : '';
+                $i++;
+                return ( $m[0] === '%d' ) ? intval( $val ) : "'" . $val . "'";
+            }, $query );
         }
 
         public function get_results( $query = null, $output = 'OBJECT' ) {
@@ -536,7 +570,11 @@ if ( ! isset( $GLOBALS['wpdb'] ) || null === $GLOBALS['wpdb'] ) {
         public function get_charset_collate() {
             return 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci';
         }
-    };
+    }
+}
+
+if ( ! isset( $GLOBALS['wpdb'] ) || null === $GLOBALS['wpdb'] ) {
+    $GLOBALS['wpdb'] = new Affilync_Mock_Wpdb();
 }
 
 /**
@@ -631,4 +669,298 @@ if ( ! class_exists( 'WP_UnitTestCase' ) ) {
             // Base implementation - children override this.
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Additional mocks required for Conversion Tracker, API Client, Cookie Handler,
+// and Product Sync test suites.
+// ---------------------------------------------------------------------------
+
+if ( ! defined( 'AFFILYNC_API_URL' ) ) {
+    define( 'AFFILYNC_API_URL', 'https://api.affilync.com' );
+}
+
+if ( ! defined( 'AFFILYNC_VERSION' ) ) {
+    define( 'AFFILYNC_VERSION', '1.0.0-test' );
+}
+
+if ( ! defined( 'AUTH_KEY' ) ) {
+    define( 'AUTH_KEY', 'test_auth_key_for_phpunit_cookie_signing' );
+}
+
+if ( ! function_exists( 'wp_remote_request' ) ) {
+    function wp_remote_request( $url, $args = array() ) {
+        return array(
+            'response' => array( 'code' => 200 ),
+            'body'     => '{}',
+        );
+    }
+}
+
+if ( ! function_exists( 'get_post_type' ) ) {
+    function get_post_type( $post_id = null ) {
+        return 'product';
+    }
+}
+
+if ( ! function_exists( 'wp_get_attachment_url' ) ) {
+    function wp_get_attachment_url( $attachment_id ) {
+        return 'https://example.com/wp-content/uploads/image-' . $attachment_id . '.jpg';
+    }
+}
+
+if ( ! function_exists( 'get_post_meta' ) ) {
+    function get_post_meta( $post_id, $key = '', $single = false ) {
+        return $single ? '' : array();
+    }
+}
+
+if ( ! function_exists( 'get_term' ) ) {
+    function get_term( $term_id, $taxonomy = '' ) {
+        return (object) array(
+            'term_id' => $term_id,
+            'name'    => 'Term ' . $term_id,
+            'slug'    => 'term-' . $term_id,
+        );
+    }
+}
+
+if ( ! function_exists( 'wc_get_product' ) ) {
+    function wc_get_product( $product_id ) {
+        // Allow tests to inject a specific product via global.
+        if ( isset( $GLOBALS['affilync_test_wc_product'] ) ) {
+            $product = $GLOBALS['affilync_test_wc_product'];
+            // Only return if the IDs match (or no get_id available).
+            if ( is_object( $product ) && method_exists( $product, 'get_id' ) ) {
+                if ( $product->get_id() == $product_id ) {
+                    return $product;
+                }
+            }
+            // Fallback: return whatever was set.
+            return $product;
+        }
+        return null;
+    }
+}
+
+if ( ! function_exists( 'wc_get_products' ) ) {
+    function wc_get_products( $args = array() ) {
+        return array();
+    }
+}
+
+if ( ! function_exists( 'get_woocommerce_currency' ) ) {
+    function get_woocommerce_currency() {
+        return 'USD';
+    }
+}
+
+if ( ! function_exists( 'wc_get_product_terms' ) ) {
+    function wc_get_product_terms( $product_id, $taxonomy, $args = array() ) {
+        return array();
+    }
+}
+
+if ( ! function_exists( 'wc_attribute_label' ) ) {
+    function wc_attribute_label( $name ) {
+        return ucfirst( str_replace( 'pa_', '', $name ) );
+    }
+}
+
+if ( ! function_exists( 'wp_doing_ajax' ) ) {
+    function wp_doing_ajax() {
+        return false;
+    }
+}
+
+if ( ! function_exists( 'wp_doing_cron' ) ) {
+    function wp_doing_cron() {
+        return false;
+    }
+}
+
+if ( ! function_exists( 'esc_url_raw' ) ) {
+    function esc_url_raw( $url, $protocols = null ) {
+        return filter_var( $url, FILTER_SANITIZE_URL ) ?: '';
+    }
+}
+
+if ( ! function_exists( 'esc_js' ) ) {
+    function esc_js( $text ) {
+        return addslashes( $text );
+    }
+}
+
+if ( ! function_exists( 'as_schedule_single_action' ) ) {
+    $GLOBALS['affilync_scheduled_actions'] = array();
+
+    function as_schedule_single_action( $timestamp, $hook, $args = array(), $group = '' ) {
+        $GLOBALS['affilync_scheduled_actions'][] = array(
+            'timestamp' => $timestamp,
+            'hook'      => $hook,
+            'args'      => $args,
+            'group'     => $group,
+        );
+        return count( $GLOBALS['affilync_scheduled_actions'] );
+    }
+}
+
+if ( ! function_exists( 'affilync_log_audit_event' ) ) {
+    function affilync_log_audit_event( $event, $data = array() ) {
+        // No-op for testing.
+    }
+}
+
+// Additional constants for integrity, license, REST, and notification tests.
+if ( ! defined( 'AFFILYNC_PLUGIN_FILE' ) ) {
+    define( 'AFFILYNC_PLUGIN_FILE', '/var/www/html/wp-content/plugins/affilync-woocommerce/affilync-woocommerce.php' );
+}
+
+if ( ! defined( 'AFFILYNC_APP_URL' ) ) {
+    define( 'AFFILYNC_APP_URL', 'https://app.affilync.com' );
+}
+
+if ( ! defined( 'WC_VERSION' ) ) {
+    define( 'WC_VERSION', '8.0.0' );
+}
+
+if ( ! function_exists( 'wp_salt' ) ) {
+    function wp_salt( $scheme = 'auth' ) {
+        return 'test_salt_for_phpunit_' . $scheme;
+    }
+}
+
+if ( ! function_exists( 'register_setting' ) ) {
+    function register_setting( $option_group, $option_name, $args = array() ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'wp_mail' ) ) {
+    function wp_mail( $to, $subject, $message, $headers = '', $attachments = array() ) {
+        if ( ! isset( $GLOBALS['affilync_sent_emails'] ) ) {
+            $GLOBALS['affilync_sent_emails'] = array();
+        }
+        $GLOBALS['affilync_sent_emails'][] = array(
+            'to' => $to, 'subject' => $subject, 'message' => $message,
+        );
+        return true;
+    }
+}
+
+if ( ! function_exists( 'sanitize_email' ) ) {
+    function sanitize_email( $email ) {
+        return filter_var( $email, FILTER_SANITIZE_EMAIL );
+    }
+}
+
+if ( ! function_exists( 'wp_enqueue_script' ) ) {
+    function wp_enqueue_script( ...$args ) { /* no-op */ }
+}
+
+if ( ! function_exists( 'wp_localize_script' ) ) {
+    function wp_localize_script( ...$args ) { /* no-op */ }
+}
+
+if ( ! function_exists( 'wc_price' ) ) {
+    function wc_price( $price ) {
+        return '$' . number_format( (float) $price, 2 );
+    }
+}
+
+if ( ! function_exists( 'selected' ) ) {
+    function selected( $selected, $current = true, $echo = true ) {
+        $result = $selected == $current ? " selected='selected'" : '';
+        if ( $echo ) echo $result;
+        return $result;
+    }
+}
+
+if ( ! function_exists( 'human_time_diff' ) ) {
+    function human_time_diff( $from, $to = 0 ) {
+        $diff = abs( ( $to ?: time() ) - $from );
+        if ( $diff < 3600 ) return round( $diff / 60 ) . ' mins';
+        if ( $diff < 86400 ) return round( $diff / 3600 ) . ' hours';
+        return round( $diff / 86400 ) . ' days';
+    }
+}
+
+if ( ! function_exists( 'checked' ) ) {
+    function checked( $checked, $current = true, $echo = true ) {
+        $result = $checked == $current ? " checked='checked'" : '';
+        if ( $echo ) echo $result;
+        return $result;
+    }
+}
+
+if ( ! function_exists( 'add_submenu_page' ) ) {
+    function add_submenu_page( $parent_slug, $page_title, $menu_title, $capability, $menu_slug, $callback = '', $position = null ) {
+        if ( ! isset( $GLOBALS['affilync_menu_pages'] ) ) {
+            $GLOBALS['affilync_menu_pages'] = array();
+        }
+        $GLOBALS['affilync_menu_pages'][] = array(
+            'parent_slug' => $parent_slug,
+            'menu_slug'   => $menu_slug,
+            'page_title'  => $page_title,
+        );
+        return $menu_slug;
+    }
+}
+
+if ( ! function_exists( 'add_settings_section' ) ) {
+    function add_settings_section( $id, $title, $callback, $page, $args = array() ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'add_settings_field' ) ) {
+    function add_settings_field( $id, $title, $callback, $page, $section = 'default', $args = array() ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'settings_fields' ) ) {
+    function settings_fields( $option_group ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'do_settings_sections' ) ) {
+    function do_settings_sections( $page ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'submit_button' ) ) {
+    function submit_button( $text = null, $type = 'primary', $name = 'submit', $wrap = true, $other_attributes = '' ) {
+        // No-op for testing.
+    }
+}
+
+if ( ! function_exists( 'get_admin_page_title' ) ) {
+    function get_admin_page_title() {
+        return 'Affilync Settings';
+    }
+}
+
+if ( ! function_exists( 'wc_get_order_statuses' ) ) {
+    function wc_get_order_statuses() {
+        return array(
+            'wc-pending'    => 'Pending payment',
+            'wc-processing' => 'Processing',
+            'wc-on-hold'    => 'On hold',
+            'wc-completed'  => 'Completed',
+            'wc-cancelled'  => 'Cancelled',
+            'wc-refunded'   => 'Refunded',
+            'wc-failed'     => 'Failed',
+        );
+    }
+}
+
+if ( ! function_exists( 'rawurlencode' ) ) {
+    // Already exists in PHP, just ensure it's available.
+}
+
+if ( ! function_exists( 'wp_enqueue_style' ) ) {
+    function wp_enqueue_style( ...$args ) { /* no-op */ }
 }

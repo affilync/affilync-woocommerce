@@ -285,6 +285,7 @@ class Affilync_Notification_Email {
      * @return bool
      */
     private function fallback_to_wp_mail( $to_email, $to_name, $template_id, $params ) {
+        $params   = $this->prepare_template_params( $params );
         $template = $this->get_fallback_template( $template_id, $params );
 
         $headers = array(
