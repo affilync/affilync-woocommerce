@@ -796,31 +796,37 @@ class Affilync_Tracking_Conversion_Tracker {
 
         $table = $wpdb->prefix . self::TABLE_NAME;
 
+        // Validate period against allowlist.
+        $allowed_periods = array( 'today', 'week', 'month', 'all' );
+        if ( ! in_array( $period, $allowed_periods, true ) ) {
+            $period = 'month';
+        }
+
         $where = '';
         switch ( $period ) {
             case 'today':
-                $where = "AND DATE(created_at) = CURDATE()";
+                $where = ' AND DATE(created_at) = CURDATE()';
                 break;
             case 'week':
-                $where = "AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
+                $where = ' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
                 break;
             case 'month':
-                $where = "AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+                $where = ' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
                 break;
         }
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-        $stats = $wpdb->get_row(
-            "SELECT
+        $query = "SELECT
                 COUNT(*) as total_conversions,
-                SUM(order_total) as total_revenue,
-                SUM(commission_amount) as total_commission,
+                COALESCE(SUM(order_total), 0) as total_revenue,
+                COALESCE(SUM(commission_amount), 0) as total_commission,
                 SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
             FROM {$table}
-            WHERE 1=1 {$where}"
-        );
+            WHERE 1=1{$where}";
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $stats = $wpdb->get_row( $query );
 
         return array(
             'total_conversions' => intval( $stats->total_conversions ),

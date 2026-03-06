@@ -38,6 +38,12 @@ class Affilync_CallTracking_Stats {
 
         $table = $wpdb->prefix . Affilync_CallTracking_Call_Log::TABLE_NAME;
 
+        // Validate period against allowlist.
+        $allowed_periods = array( 'today', 'week', 'month', 'all' );
+        if ( ! in_array( $period, $allowed_periods, true ) ) {
+            $period = 'month';
+        }
+
         // Check if table exists.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $table_exists = $wpdb->get_var(
@@ -48,19 +54,21 @@ class Affilync_CallTracking_Stats {
             return $this->empty_stats();
         }
 
-        $date_clause = $this->get_date_clause( $period );
-
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $row = $wpdb->get_row(
-            "SELECT
+        // Build query with prepare() for safety.
+        $base_query = "SELECT
                 COUNT(*) as total_calls,
                 COALESCE(SUM(duration), 0) as total_duration,
                 COALESCE(AVG(duration), 0) as avg_duration,
-                COUNT(CASE WHEN duration >= " . self::QUALIFIED_DURATION . " THEN 1 END) as qualified_calls,
+                COUNT(CASE WHEN duration >= %d THEN 1 END) as qualified_calls,
                 COUNT(DISTINCT caller_number) as unique_callers
             FROM {$table}
-            WHERE status = 'completed'
-            {$date_clause}"
+            WHERE status = 'completed'";
+
+        $date_clause = $this->get_date_clause( $period );
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $row = $wpdb->get_row(
+            $wpdb->prepare( $base_query . $date_clause, self::QUALIFIED_DURATION )
         );
 
         if ( ! $row ) {
@@ -79,19 +87,22 @@ class Affilync_CallTracking_Stats {
     /**
      * Build a date WHERE clause for the given period.
      *
-     * @param string $period Time period.
+     * Only returns hardcoded SQL fragments for allowlisted period values.
+     * The $period parameter MUST be validated before calling this method.
+     *
+     * @param string $period Time period (must be one of: today, week, month, all).
      * @return string SQL clause (includes leading AND).
      */
     private function get_date_clause( $period ) {
         switch ( $period ) {
             case 'today':
-                return "AND DATE(created_at) = CURDATE()";
+                return ' AND DATE(created_at) = CURDATE()';
 
             case 'week':
-                return "AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
+                return ' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
 
             case 'month':
-                return "AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+                return ' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
 
             case 'all':
             default:
