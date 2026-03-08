@@ -98,6 +98,16 @@ class Affilync_Security_Encryption {
             );
         }
 
+        // SEC-08: Block startup in production if no secure encryption key is configured.
+        // In production, DB-stored keys are unacceptable — they can be extracted via SQL injection.
+        if ( defined( 'AFFILYNC_PRODUCTION_MODE' ) && AFFILYNC_PRODUCTION_MODE && ! $this->is_key_secure() ) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
+            trigger_error(
+                esc_html__( 'Affilync: AFFILYNC_ENCRYPTION_KEY must be defined in wp-config.php for production. Encryption is disabled until this is resolved.', 'affilync-woocommerce' ),
+                E_USER_ERROR
+            );
+        }
+
         // Check key security on admin pages.
         if ( is_admin() ) {
             add_action( 'admin_notices', array( $this, 'display_insecure_key_warning' ) );
