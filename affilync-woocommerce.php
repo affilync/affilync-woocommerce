@@ -4,8 +4,8 @@
  *
  * @package           Affilync_WooCommerce
  * @author            Affilync
- * @copyright         2024-2026 Affilync. All Rights Reserved.
- * @license           Proprietary
+ * @copyright         2024-2026 Affilync
+ * @license           GPL-2.0-or-later
  *
  * @wordpress-plugin
  * Plugin Name:       Affilync for WooCommerce
@@ -18,25 +18,25 @@
  * Author URI:        https://affilync.com
  * Text Domain:       affilync-woocommerce
  * Domain Path:       /languages
- * License:           Proprietary - See LICENSE.txt
- * License URI:       https://affilync.com/legal/plugin-license
+ * License:           GPL-2.0-or-later
+ * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * WC requires at least: 5.0
  * WC tested up to:   8.5
  *
- * PROPRIETARY SOFTWARE LICENSE
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- * This software is protected by copyright law and international treaties.
- * Unauthorized reproduction, distribution, modification, or reverse engineering
- * of this software, or any portion of it, is strictly prohibited and may result
- * in severe civil and criminal penalties.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
  *
- * This software requires a valid license key for operation. Each license is
- * valid for a single WordPress installation and is bound to the licensed domain.
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <https://www.gnu.org/licenses/>.
  *
- * For licensing inquiries: licensing@affilync.com
- * For support: support@affilync.com
- *
- * (c) 2024-2026 Affilync. All Rights Reserved.
+ * (c) 2024-2026 Affilync.
  */
 
 // Prevent direct file access.
