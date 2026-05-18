@@ -218,7 +218,7 @@ class Affilync_Security_Encryption {
             $stored_key = wp_generate_password( 64, true, true );
             update_option( 'affilync_encryption_key', $stored_key, false );
 
-            // Log warning about insecure key storage.
+            // Log warning about insecure key storage (one-time on generation).
             if ( class_exists( 'Affilync_Security_Audit_Logger' ) ) {
                 $logger = new Affilync_Security_Audit_Logger();
                 $logger->warning(
@@ -226,6 +226,38 @@ class Affilync_Security_Encryption {
                     array( 'message' => 'Encryption key stored in database. Define AFFILYNC_ENCRYPTION_KEY for production.' )
                 );
             }
+        }
+
+        // SEC: emit a recurring loud warning on every key read while the
+        // DB fallback is in use. The single one-time warning above only
+        // fires on key generation; an operator who installs the plugin
+        // without setting AFFILYNC_PRODUCTION_MODE never sees it again
+        // and ships to prod with the key sitting next to the ciphertext
+        // it protects (any SQL injection or backup compromise yields
+        // both). Now PHP_USER_NOTICE on every read so the noise reaches
+        // log aggregators; admin notice for WP-admin visibility.
+        // (Pre-launch security audit 2026-05-18.)
+        if ( function_exists( 'trigger_error' ) ) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
+            trigger_error(
+                'Affilync WooCommerce: encryption key is read from wp_options. ' .
+                'Define AFFILYNC_ENCRYPTION_KEY in wp-config.php and ' .
+                'AFFILYNC_PRODUCTION_MODE for production deployments.',
+                E_USER_WARNING
+            );
+        }
+        if ( is_admin() && function_exists( 'add_action' ) ) {
+            add_action(
+                'admin_notices',
+                function () {
+                    echo '<div class="notice notice-error"><p>';
+                    echo '<strong>Affilync WooCommerce — Insecure encryption-key storage.</strong> ';
+                    echo 'The plugin is reading its encryption key from the database. ';
+                    echo 'Set <code>AFFILYNC_ENCRYPTION_KEY</code> and ';
+                    echo '<code>AFFILYNC_PRODUCTION_MODE</code> in wp-config.php before production use.';
+                    echo '</p></div>';
+                }
+            );
         }
 
         return $stored_key;
