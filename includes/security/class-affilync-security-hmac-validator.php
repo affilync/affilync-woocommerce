@@ -199,8 +199,16 @@ class Affilync_Security_HMAC_Validator {
      * }
      */
     public function verify_request() {
-        // Get raw body and unslash to reverse WordPress magic quotes.
-        $payload = wp_unslash( file_get_contents( 'php://input' ) );
+        // SEC: do NOT wp_unslash() the raw php://input stream. WordPress'
+        // magic-quotes layer only applies to $_GET / $_POST / $_COOKIE /
+        // $_REQUEST / $_SERVER — not to the raw stdin. wp_unslash on the
+        // raw body silently mutates the bytes that the signer signed,
+        // which (a) breaks HMAC verification for legitimate Affilync
+        // payloads containing backslashes, and (b) could verify a
+        // tampered payload whose slashes happen to be stripped to match
+        // the genuine signature.
+        // (Pre-launch security audit 2026-05-18.)
+        $payload = file_get_contents( 'php://input' );
         if ( empty( $payload ) ) {
             return array(
                 'valid'   => false,
