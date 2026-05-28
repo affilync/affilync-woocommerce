@@ -273,13 +273,36 @@ class Affilync_API_REST_Controller {
      *
      * @return bool|WP_Error True if allowed.
      */
-    public function check_admin_permission() {
+    public function check_admin_permission( $request = null ) {
         if ( ! current_user_can( 'manage_woocommerce' ) ) {
             return new WP_Error(
                 'rest_forbidden',
                 __( 'You do not have permission to perform this action.', 'affilync-woocommerce' ),
                 array( 'status' => 403 )
             );
+        }
+
+        // V58.25 P0 (2026-05-28): explicit nonce check on write methods.
+        // WordPress's REST cookie-auth flow normally enforces X-WP-Nonce
+        // via wp_validate_logged_in_cookie, but that contract has
+        // implicitly broken in past WP releases (and is opaque to a
+        // future security reviewer). Make the nonce check visible
+        // at the plugin layer so an admin's stolen browser session
+        // cookie alone cannot mutate plugin settings via cross-origin
+        // POST.
+        if ( $request && in_array(
+            strtoupper( $request->get_method() ),
+            array( 'POST', 'PUT', 'PATCH', 'DELETE' ),
+            true
+        ) ) {
+            $nonce = $request->get_header( 'X-WP-Nonce' );
+            if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+                return new WP_Error(
+                    'rest_cookie_invalid_nonce',
+                    __( 'Invalid or missing X-WP-Nonce header.', 'affilync-woocommerce' ),
+                    array( 'status' => 403 )
+                );
+            }
         }
 
         return true;
