@@ -703,8 +703,17 @@ class Affilync_API_REST_Controller {
             );
         }
 
-        // Verify HMAC signature (required for all conversion tracking requests).
+        // V58.7 P0 (2026-05-28): TWO compounding security bugs fixed here.
+        // 1) verify() was called WITHOUT $timestamp, so the validator's
+        //    replay-window check was skipped and the same body+signature
+        //    pair could be replayed forever.
+        // 2) verify() returns array('valid' => bool, 'error' => str) — PHP
+        //    arrays are always truthy, so `if ( ! verify(...) )` ALWAYS
+        //    evaluated to false. The endpoint accepted ANY signature.
+        // Together: unauthenticated arbitrary conversion injection. Fix:
+        // require timestamp header, pass it to verify(), check $result['valid'].
         $signature = $request->get_header( 'X-Affilync-Signature' );
+        $timestamp = $request->get_header( 'X-Affilync-Timestamp' );
         if ( ! $signature ) {
             $this->audit_logger->warning(
                 Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
@@ -718,11 +727,29 @@ class Affilync_API_REST_Controller {
             );
         }
 
-        $body_raw = $request->get_body();
-        if ( ! $this->hmac_validator->verify( $body_raw, $signature ) ) {
+        if ( ! $timestamp ) {
             $this->audit_logger->warning(
                 Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
-                array( 'action' => 'conversion_track', 'reason' => 'invalid_hmac' )
+                array( 'action' => 'conversion_track', 'reason' => 'missing_timestamp' )
+            );
+
+            return new WP_Error(
+                'missing_timestamp',
+                __( 'X-Affilync-Timestamp header is required.', 'affilync-woocommerce' ),
+                array( 'status' => 403 )
+            );
+        }
+
+        $body_raw = $request->get_body();
+        $hmac_result = $this->hmac_validator->verify( $body_raw, $signature, $timestamp );
+        if ( ! is_array( $hmac_result ) || empty( $hmac_result['valid'] ) ) {
+            $this->audit_logger->warning(
+                Affilync_Security_Audit_Logger::EVENT_WEBHOOK_INVALID,
+                array(
+                    'action' => 'conversion_track',
+                    'reason' => 'invalid_hmac',
+                    'error'  => is_array( $hmac_result ) ? ( $hmac_result['error'] ?? '' ) : 'invalid_result',
+                )
             );
 
             return new WP_Error(
@@ -814,6 +841,13 @@ class Affilync_API_REST_Controller {
 
         $commission_amount = round( floatval( $order->get_subtotal() ) * floatval( $commission_rate ), 4 );
 
+        // V58.7 P0 (2026-05-28): persist the authoritative order_total from
+        // WooCommerce (the order object), NOT the attacker-supplied $amount
+        // from the request body. Previously `order_total => $amount` let any
+        // signed caller (now properly authenticated post-#fix above) write
+        // arbitrary revenue numbers into the admin's "Revenue" stat card.
+        $order_total_server = floatval( $order->get_total() );
+
         // Insert the conversion record.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
         $inserted = $wpdb->insert(
@@ -824,7 +858,7 @@ class Affilync_API_REST_Controller {
                 'campaign_id'       => null,
                 'link_id'           => null,
                 'click_id'          => ! empty( $click_id ) ? $click_id : null,
-                'order_total'       => $amount,
+                'order_total'       => $order_total_server,
                 'commission_amount' => $commission_amount,
                 'currency'          => $currency,
                 'status'            => 'pending',
