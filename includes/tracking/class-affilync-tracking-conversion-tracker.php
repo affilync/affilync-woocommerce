@@ -375,7 +375,7 @@ class Affilync_Tracking_Conversion_Tracker {
 
         // Build API payload.
         $payload = array(
-            'external_id'       => (string) $conversion->order_id,
+            'order_reference'   => (string) $conversion->order_id,
             'platform'          => 'woocommerce',
             'affiliate_id'      => $conversion->affiliate_id,
             'campaign_id'       => $conversion->campaign_id,
@@ -386,7 +386,6 @@ class Affilync_Tracking_Conversion_Tracker {
             'currency'          => $conversion->currency,
             'order_date'        => $order->get_date_created() ? $order->get_date_created()->format( 'c' ) : null,
             'customer_email'    => $order->get_billing_email(),
-            'customer_id'       => $order->get_customer_id(),
             'products'          => $this->get_order_products( $order ),
             'attribution_data'  => json_decode( $conversion->attribution_data, true ),
         );
