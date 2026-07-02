@@ -111,6 +111,22 @@ class Affilync_API_Client {
     }
 
     /**
+     * Make an HMAC-signed POST request.
+     *
+     * For server-to-server webhook endpoints (WooCommerce product sync, refund)
+     * that verify an HMAC-SHA256 signature over "{timestamp}." + raw body using
+     * the shared webhook secret. The signature/timestamp headers are added by
+     * request() so they cover the exact serialized body.
+     *
+     * @param string $endpoint API endpoint.
+     * @param array  $data     Request body.
+     * @return array|WP_Error Response data or error.
+     */
+    public function post_signed( $endpoint, $data = array() ) {
+        return $this->request( 'POST', $endpoint, array( 'body' => $data, 'sign' => true ) );
+    }
+
+    /**
      * Make a PUT request.
      *
      * @param string $endpoint API endpoint.
@@ -384,8 +400,22 @@ class Affilync_API_Client {
         );
 
         // Add body for POST/PUT/PATCH.
+        $json_body = null;
         if ( ! empty( $options['body'] ) && in_array( $method, array( 'POST', 'PUT', 'PATCH' ), true ) ) {
-            $args['body'] = wp_json_encode( $options['body'] );
+            $json_body    = wp_json_encode( $options['body'] );
+            $args['body'] = $json_body;
+        }
+
+        // HMAC sign the request for server-to-server webhook endpoints
+        // (product sync, refund) that verify X-Affilync-Signature /
+        // X-Affilync-Timestamp instead of (or in addition to) the bearer token.
+        // We sign the EXACT bytes placed on the wire so the API's
+        // HMAC-SHA256(secret, "{timestamp}." + body) check matches.
+        if ( ! empty( $options['sign'] ) ) {
+            $hmac   = new Affilync_Security_HMAC_Validator();
+            $signed = $hmac->sign( null !== $json_body ? $json_body : '' );
+            $args['headers']['X-Affilync-Signature'] = $signed['signature'];
+            $args['headers']['X-Affilync-Timestamp'] = (string) $signed['timestamp'];
         }
 
         // Make request with retry logic.
@@ -616,7 +646,11 @@ class Affilync_API_Client {
      * @return array|WP_Error Connection status or error.
      */
     public function test_connection() {
-        $result = $this->get( '/api/brand/profile' );
+        // The brand profile lives at /api/woocommerce/brand/profile — the
+        // purpose-built endpoint for this plugin (bearer/brand auth) that also
+        // reports connection status/plan/verification. /api/brand/profile
+        // (singular) does not exist and 404'd.
+        $result = $this->get( '/api/woocommerce/brand/profile' );
 
         if ( is_wp_error( $result ) ) {
             return $result;
@@ -634,11 +668,14 @@ class Affilync_API_Client {
      * @return array|WP_Error Brand data or error.
      */
     public function get_brand_profile() {
-        return $this->get( '/api/brand/profile' );
+        return $this->get( '/api/woocommerce/brand/profile' );
     }
 
     /**
      * Track a conversion.
+     *
+     * Posts to the e-commerce conversion ingest (/api/conversions/track), which
+     * authenticates with the brand's bearer token (no HMAC).
      *
      * @param array $conversion Conversion data.
      * @return array|WP_Error Result or error.
@@ -650,21 +687,27 @@ class Affilync_API_Client {
     /**
      * Sync a product.
      *
+     * Posts to the HMAC-gated /api/woocommerce/products/sync endpoint. The old
+     * /api/products/sync path did not exist (404).
+     *
      * @param array $product Product data.
      * @return array|WP_Error Result or error.
      */
     public function sync_product( $product ) {
-        return $this->post( '/api/products/sync', $product );
+        return $this->post_signed( '/api/woocommerce/products/sync', $product );
     }
 
     /**
      * Delete a synced product.
      *
+     * Targets /api/woocommerce/products/{id}. The old /api/products/{id} path
+     * did not exist (404).
+     *
      * @param string $product_id Affilync product ID.
      * @return array|WP_Error Result or error.
      */
     public function delete_product( $product_id ) {
-        return $this->delete( '/api/products/' . $product_id );
+        return $this->delete( '/api/woocommerce/products/' . rawurlencode( $product_id ) );
     }
 
     /**

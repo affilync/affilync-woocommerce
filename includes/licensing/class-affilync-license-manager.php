@@ -21,7 +21,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Affilync_License_Manager {
 
     /**
-     * License API endpoint.
+     * License API endpoint (production default).
+     *
+     * Used as the fallback when the AFFILYNC_API_URL override is not defined.
+     * Do not read this constant directly for requests — call
+     * get_license_api_url() so the AFFILYNC_API_URL override is honored.
      *
      * @var string
      */
@@ -213,23 +217,42 @@ class Affilync_License_Manager {
             return $response;
         }
 
-        // Store license data.
+        // The activate endpoint wraps its payload in the standard
+        // {success, message, data:{...}} envelope (wrap_response, affilync-api
+        // woocommerce.py:3129). Unwrap so client_id/plan/features/expires_at —
+        // which live under `data` — actually parse. Reading them flat left them
+        // NULL and broke the OAuth handshake + first 24h revalidation.
+        $data = $this->unwrap_response_envelope( $response );
+
+        // Store license data (encrypted at rest via store_license_data).
         $license_data = array(
-            'license_key' => $license_key,
-            'status'      => self::STATUS_VALID,
-            'client_id'   => $response['client_id'] ?? null,
-            'expires_at'  => $response['expires_at'] ?? null,
-            'plan'        => $response['plan'] ?? 'starter',
-            'features'    => $response['features'] ?? array(),
-            'activated_at' => current_time( 'mysql' ),
-            'last_check'  => current_time( 'mysql' ),
+            'license_key'   => $license_key,
+            'status'        => self::STATUS_VALID,
+            'client_id'     => $data['client_id'] ?? null,
+            // client_secret is only returned once, on activation. Persist it in
+            // the encrypted license blob so it is available for future use.
+            'client_secret' => $data['client_secret'] ?? null,
+            'expires_at'    => $data['expires_at'] ?? null,
+            'plan'          => $data['plan'] ?? 'starter',
+            'features'      => $data['features'] ?? array(),
+            'activated_at'  => current_time( 'mysql' ),
+            'last_check'    => current_time( 'mysql' ),
         );
 
         $this->store_license_data( $license_data );
 
-        // Store client ID for OAuth.
-        if ( ! empty( $response['client_id'] ) ) {
-            update_option( 'affilync_license_client_id', $response['client_id'], false );
+        // Store client ID for OAuth (plaintext option consumed by the OAuth
+        // client's get_client_id()). Not secret — it is a public identifier.
+        if ( ! empty( $data['client_id'] ) ) {
+            update_option( 'affilync_license_client_id', $data['client_id'], false );
+        }
+
+        // Store the client secret encrypted for any secret-bearing flows.
+        if ( ! empty( $data['client_secret'] ) ) {
+            $encrypted_secret = $this->encryption->encrypt( $data['client_secret'] );
+            if ( false !== $encrypted_secret ) {
+                update_option( 'affilync_license_client_secret', $encrypted_secret, false );
+            }
         }
 
         // Schedule revalidation.
@@ -320,7 +343,35 @@ class Affilync_License_Manager {
         $license_data = $this->get_license_data();
 
         if ( is_wp_error( $response ) ) {
-            // Network error - enter grace period.
+            // api_request() returns a WP_Error for both transport failures AND
+            // definitive business rejections (HTTP 200 with success:false, e.g.
+            // an expired/suspended/invalid license). Distinguish them so a
+            // genuinely expired license is not handed an undeserved grace
+            // period reserved for transient network outages.
+            $error_data    = $response->get_error_data();
+            $server_status = is_array( $error_data ) && ! empty( $error_data['status'] )
+                ? $this->map_server_status( $error_data['status'] )
+                : null;
+            $is_definitive = is_array( $error_data ) && ! empty( $error_data['definitive'] );
+
+            if ( $is_definitive && null !== $server_status ) {
+                // Server gave a definitive non-valid status — honor it directly.
+                $license_data['status']     = $server_status;
+                $license_data['last_check'] = current_time( 'mysql' );
+                $this->store_license_data( $license_data );
+
+                $this->audit_logger->warning(
+                    'license_validation_rejected',
+                    array(
+                        'status' => $server_status,
+                        'error'  => $response->get_error_message(),
+                    )
+                );
+
+                return $server_status;
+            }
+
+            // Transient network/server error - enter grace period.
             $license_data['last_network_error'] = current_time( 'mysql' );
 
             // Check if still within grace period.
@@ -351,14 +402,22 @@ class Affilync_License_Manager {
             return self::STATUS_INVALID;
         }
 
-        // Update license data from server.
-        $new_status = $response['status'] ?? self::STATUS_INVALID;
+        // Success (HTTP 200, success:true). The verify endpoint wraps its
+        // payload in the {success, message, data:{...}} envelope, so unwrap
+        // before reading status/plan/features — reading them flat previously
+        // yielded NULL status and forced the license to 'invalid', disabling
+        // the plugin at the first 24h revalidation.
+        $data = $this->unwrap_response_envelope( $response );
+
+        $new_status = isset( $data['status'] )
+            ? ( $this->map_server_status( $data['status'] ) ?? self::STATUS_INVALID )
+            : self::STATUS_INVALID;
 
         $license_data['status']           = $new_status;
         $license_data['last_check']       = current_time( 'mysql' );
-        $license_data['expires_at']       = $response['expires_at'] ?? $license_data['expires_at'];
-        $license_data['plan']             = $response['plan'] ?? $license_data['plan'];
-        $license_data['features']         = $response['features'] ?? $license_data['features'];
+        $license_data['expires_at']       = $data['expires_at'] ?? $license_data['expires_at'];
+        $license_data['plan']             = $data['plan'] ?? $license_data['plan'];
+        $license_data['features']         = $data['features'] ?? $license_data['features'];
 
         if ( $new_status === self::STATUS_VALID ) {
             $license_data['last_valid_check'] = current_time( 'mysql' );
@@ -378,7 +437,7 @@ class Affilync_License_Manager {
      * @return array|WP_Error Response data or error.
      */
     private function api_request( $action, $data ) {
-        $url = self::LICENSE_API_URL . '/' . $action;
+        $url = $this->get_license_api_url() . '/' . $action;
 
         // Add integrity signature.
         $data['timestamp'] = time();
@@ -405,15 +464,122 @@ class Affilync_License_Manager {
         $body        = wp_remote_retrieve_body( $response );
         $result      = json_decode( $body, true );
 
-        if ( $status_code >= 400 ) {
-            $error_message = isset( $result['error'] )
-                ? $result['error']
-                : __( 'License verification failed.', 'affilync-woocommerce' );
+        // The license endpoints return HTTP 200 with an envelope of
+        // {success:false, message, data:{status:...}} for business rejections
+        // (invalid key, expired, suspended — affilync-api woocommerce.py:3062).
+        // Treating only HTTP>=400 as failure meant an invalid-key activation
+        // was stored as STATUS_VALID. Treat success===false as a failure too,
+        // and surface the server status so callers (revalidate) can honor it.
+        $body_rejected = is_array( $result )
+            && array_key_exists( 'success', $result )
+            && false === $result['success'];
 
-            return new WP_Error( 'license_api_error', $error_message );
+        if ( $status_code >= 400 || $body_rejected ) {
+            $error_message = $this->extract_error_message( $result );
+
+            // A well-formed 2xx envelope with success:false is a *definitive*
+            // business rejection; a transport/5xx error is transient.
+            $data       = $this->unwrap_response_envelope( $result );
+            $definitive = $body_rejected && $status_code < 500;
+
+            return new WP_Error(
+                'license_api_error',
+                $error_message,
+                array(
+                    'status'     => isset( $data['status'] ) ? $data['status'] : null,
+                    'definitive' => $definitive,
+                    'http_code'  => $status_code,
+                )
+            );
         }
 
         return $result;
+    }
+
+    /**
+     * Unwrap the standard API response envelope.
+     *
+     * The Affilync API wraps many responses as
+     * {success, message, data:{...}} (wrap_response). When that envelope is
+     * present the meaningful fields live under `data`; otherwise the payload is
+     * already flat. Returns the inner data array (or the flat payload).
+     *
+     * @param mixed $response Decoded response body.
+     * @return array Unwrapped payload.
+     */
+    private function unwrap_response_envelope( $response ) {
+        if ( is_array( $response )
+            && array_key_exists( 'success', $response )
+            && isset( $response['data'] )
+            && is_array( $response['data'] )
+        ) {
+            return $response['data'];
+        }
+
+        return is_array( $response ) ? $response : array();
+    }
+
+    /**
+     * Map a server-reported license status to a known plugin status constant.
+     *
+     * The API's LicenseStatus enum values (valid/invalid/expired/suspended)
+     * match the plugin constants 1:1. Anything else (e.g. "error"/"retry" from
+     * the graceful-failure path) is unknown and returns null so the caller can
+     * treat it as transient rather than a hard invalid.
+     *
+     * @param string $status Server status string.
+     * @return string|null Known plugin status constant, or null if unknown.
+     */
+    private function map_server_status( $status ) {
+        $known = array(
+            self::STATUS_VALID,
+            self::STATUS_INVALID,
+            self::STATUS_EXPIRED,
+            self::STATUS_SUSPENDED,
+            self::STATUS_GRACE,
+        );
+
+        return in_array( $status, $known, true ) ? $status : null;
+    }
+
+    /**
+     * Extract a human-readable error message from an API response.
+     *
+     * Supports both the standard envelope ("message") and legacy shapes
+     * ("error"), falling back to a generic message.
+     *
+     * @param mixed $result Decoded response body.
+     * @return string Error message.
+     */
+    private function extract_error_message( $result ) {
+        if ( is_array( $result ) ) {
+            if ( ! empty( $result['message'] ) ) {
+                return $result['message'];
+            }
+            if ( ! empty( $result['error'] ) ) {
+                return $result['error'];
+            }
+        }
+
+        return __( 'License verification failed.', 'affilync-woocommerce' );
+    }
+
+    /**
+     * Build the license API base URL, honoring the AFFILYNC_API_URL override.
+     *
+     * The api client (class-affilync-api-client.php) already respects the
+     * AFFILYNC_API_URL constant; the license manager previously hardcoded prod
+     * via LICENSE_API_URL, so pointing the plugin at a staging API still hit
+     * production for license calls. Default to the production host.
+     *
+     * @return string License API base URL (no trailing slash).
+     */
+    private function get_license_api_url() {
+        if ( defined( 'AFFILYNC_API_URL' ) && AFFILYNC_API_URL ) {
+            return rtrim( AFFILYNC_API_URL, '/' ) . '/api/woocommerce/licenses';
+        }
+
+        return self::LICENSE_API_URL;
     }
 
     /**

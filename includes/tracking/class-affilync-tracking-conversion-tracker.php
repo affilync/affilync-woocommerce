@@ -267,48 +267,27 @@ class Affilync_Tracking_Conversion_Tracker {
     }
 
     /**
-     * Fetch the authoritative commission rate for a campaign from the Affilync API.
+     * Resolve the authoritative commission rate for a campaign.
      *
      * SEC-XIV-04: The commission rate MUST come from the brand's campaign
      * settings on the server, never from client-controlled data.
      *
-     * Results are cached in a short-lived transient to avoid repeated API
-     * calls for orders placed in quick succession under the same campaign.
+     * The locally-computed commission is display/bookkeeping only: the API
+     * recomputes commission authoritatively server-side when the conversion is
+     * ingested (/api/conversions/track derives it from the click's campaign and
+     * ignores any plugin-supplied amount). The previous per-conversion GET to
+     * /api/campaigns/{id} hit a route that does not exist for this token —
+     * every call 404'd, added latency, and counted toward the API client's
+     * circuit breaker. It is therefore intentionally not called here; callers
+     * fall back to the configured default_commission_rate for the local
+     * estimate. If a per-token campaign-rate endpoint is added later (mind the
+     * percentage-vs-fraction contract), wire it in here.
      *
      * @param string $campaign_id Campaign ID.
-     * @return float|false Commission rate (0.0-1.0) or false on failure.
+     * @return float|false Commission rate (0.0-1.0) or false to use the default.
      */
     private function get_campaign_commission_rate( $campaign_id ) {
-        // Check transient cache first (5-minute TTL).
-        $cache_key = 'affilync_campaign_rate_' . md5( $campaign_id );
-        $cached    = get_transient( $cache_key );
-        if ( false !== $cached ) {
-            return floatval( $cached );
-        }
-
-        // Fetch from API.
-        $result = $this->api_client->get( '/api/campaigns/' . urlencode( $campaign_id ) );
-
-        if ( is_wp_error( $result ) ) {
-            $this->audit_logger->warning(
-                'commission_rate_fetch_failed',
-                array(
-                    'campaign_id' => $campaign_id,
-                    'error'       => $result->get_error_message(),
-                    'fallback'    => 'default_rate',
-                )
-            );
-            return false;
-        }
-
-        // Extract commission rate from the campaign data.
-        if ( isset( $result['commission_rate'] ) ) {
-            $rate = floatval( $result['commission_rate'] );
-            // Cache for 5 minutes.
-            set_transient( $cache_key, $rate, 5 * MINUTE_IN_SECONDS );
-            return $rate;
-        }
-
+        unset( $campaign_id );
         return false;
     }
 
@@ -405,8 +384,18 @@ class Affilync_Tracking_Conversion_Tracker {
             return false;
         }
 
-        // Update as synced.
-        $api_conversion_id = isset( $result['conversion_id'] ) ? $result['conversion_id'] : null;
+        // Update as synced. /api/conversions/track wraps its payload in the
+        // standard {success, message, data:{...}} envelope (wrap_response), so
+        // the remote conversion id lives under `data`. Reading it flat left
+        // api_conversion_id NULL, which later broke refund → commission
+        // reversal (the refund call needs this id). Read from the envelope,
+        // falling back to a flat shape defensively.
+        $response_data     = ( isset( $result['data'] ) && is_array( $result['data'] ) )
+            ? $result['data']
+            : $result;
+        $api_conversion_id = isset( $response_data['conversion_id'] )
+            ? $response_data['conversion_id']
+            : null;
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $wpdb->update(
@@ -518,8 +507,12 @@ class Affilync_Tracking_Conversion_Tracker {
         // Idempotency key prevents duplicate refund processing on retry.
         $idempotency_key = hash( 'sha256', "refund:{$api_conversion_id}:{$order_id}:{$status}" );
 
-        $result = $this->api_client->post(
-            '/api/conversions/' . $api_conversion_id . '/refund',
+        // The refund handler lives at /api/woocommerce/{conversion_id}/refund
+        // and is HMAC-gated (X-Affilync-Signature / X-Affilync-Timestamp). The
+        // old /api/conversions/{id}/refund path did not exist (404), so refunds
+        // never reached the API and commissions were never reversed.
+        $result = $this->api_client->post_signed(
+            '/api/woocommerce/' . rawurlencode( $api_conversion_id ) . '/refund',
             array(
                 'status'          => $status,
                 'order_id'        => $order_id,
@@ -663,9 +656,10 @@ class Affilync_Tracking_Conversion_Tracker {
                     self::ASYNC_GROUP
                 );
             } else {
-                // Fallback: Action Scheduler not available, make synchronous call.
-                $this->api_client->post(
-                    '/api/conversions/' . $conversion->api_conversion_id . '/refund',
+                // Fallback: Action Scheduler not available, make synchronous
+                // call. Same HMAC-gated /api/woocommerce/{id}/refund endpoint.
+                $this->api_client->post_signed(
+                    '/api/woocommerce/' . rawurlencode( $conversion->api_conversion_id ) . '/refund',
                     array(
                         'status'   => $status,
                         'order_id' => $order_id,
