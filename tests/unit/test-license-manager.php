@@ -281,4 +281,90 @@ class Test_License_Manager extends TestCase {
         $this->assertSame( $sig1, $sig2 );
         $this->assertSame( 64, strlen( $sig1 ) ); // HMAC-SHA256 hex.
     }
+
+    // ------------------------------------------------------------------
+    // Response envelope unwrapping (private) — D1
+    // ------------------------------------------------------------------
+
+    public function test_unwrap_envelope_extracts_data() {
+        $method = new ReflectionMethod( Affilync_License_Manager::class, 'unwrap_response_envelope' );
+        $method->setAccessible( true );
+
+        // Standard {success, message, data:{...}} envelope from wrap_response.
+        $envelope = array(
+            'success' => true,
+            'message' => 'License activated successfully',
+            'data'    => array(
+                'status'        => 'valid',
+                'client_id'     => 'client_123',
+                'client_secret' => 'secret_xyz',
+                'plan'          => 'pro',
+                'features'      => array( 'a', 'b' ),
+                'expires_at'    => '2027-01-01T00:00:00',
+            ),
+        );
+
+        $data = $method->invoke( $this->license_mgr, $envelope );
+
+        $this->assertSame( 'valid', $data['status'] );
+        $this->assertSame( 'client_123', $data['client_id'] );
+        $this->assertSame( 'secret_xyz', $data['client_secret'] );
+        $this->assertSame( 'pro', $data['plan'] );
+    }
+
+    public function test_unwrap_envelope_passthrough_flat_payload() {
+        $method = new ReflectionMethod( Affilync_License_Manager::class, 'unwrap_response_envelope' );
+        $method->setAccessible( true );
+
+        // A flat payload (no envelope) is returned as-is.
+        $flat = array( 'status' => 'valid', 'plan' => 'starter' );
+        $this->assertSame( $flat, $method->invoke( $this->license_mgr, $flat ) );
+
+        // Non-array input yields an empty array.
+        $this->assertSame( array(), $method->invoke( $this->license_mgr, null ) );
+    }
+
+    public function test_map_server_status_known_and_unknown() {
+        $method = new ReflectionMethod( Affilync_License_Manager::class, 'map_server_status' );
+        $method->setAccessible( true );
+
+        $this->assertSame( 'valid', $method->invoke( $this->license_mgr, 'valid' ) );
+        $this->assertSame( 'invalid', $method->invoke( $this->license_mgr, 'invalid' ) );
+        $this->assertSame( 'expired', $method->invoke( $this->license_mgr, 'expired' ) );
+        $this->assertSame( 'suspended', $method->invoke( $this->license_mgr, 'suspended' ) );
+        // "error"/"retry" from the graceful-failure path is unknown → null.
+        $this->assertNull( $method->invoke( $this->license_mgr, 'error' ) );
+        $this->assertNull( $method->invoke( $this->license_mgr, 'nonsense' ) );
+    }
+
+    public function test_extract_error_message_prefers_message() {
+        $method = new ReflectionMethod( Affilync_License_Manager::class, 'extract_error_message' );
+        $method->setAccessible( true );
+
+        $this->assertSame(
+            'Invalid license key',
+            $method->invoke( $this->license_mgr, array( 'success' => false, 'message' => 'Invalid license key' ) )
+        );
+        $this->assertSame(
+            'legacy error',
+            $method->invoke( $this->license_mgr, array( 'error' => 'legacy error' ) )
+        );
+        $this->assertNotEmpty( $method->invoke( $this->license_mgr, array() ) );
+    }
+
+    // ------------------------------------------------------------------
+    // License API URL override (private) — D8
+    // ------------------------------------------------------------------
+
+    public function test_license_api_url_honors_override() {
+        $method = new ReflectionMethod( Affilync_License_Manager::class, 'get_license_api_url' );
+        $method->setAccessible( true );
+
+        // AFFILYNC_API_URL is defined in the test mocks as the prod host, so the
+        // override branch builds the licenses path from it.
+        $this->assertSame(
+            AFFILYNC_API_URL . '/api/woocommerce/licenses',
+            $method->invoke( $this->license_mgr )
+        );
+    }
 }

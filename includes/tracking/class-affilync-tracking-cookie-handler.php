@@ -337,71 +337,24 @@ class Affilync_Tracking_Cookie_Handler {
             return;
         }
 
-        // Get configured params.
-        $track_params = isset( $settings['track_url_params'] )
-            ? $settings['track_url_params']
-            : array( 'ref', 'aff', 'campaign', 'click_id', 'link_id' );
-
-        $cookie_duration = isset( $settings['cookie_duration'] )
-            ? intval( $settings['cookie_duration'] )
-            : self::DEFAULT_DURATION;
-
+        // NOTE: This script deliberately does NOT write the tracking cookie.
+        // Affiliate params are captured and persisted server-side in
+        // capture_tracking_params() (hooked on `init`, priority 1), which
+        // writes a SIGNED cookie ("{base64(json)}.{hmac}"). The old JS wrote an
+        // UNSIGNED btoa(JSON) value that the signed PHP reader
+        // (get_cookie_data(): requires a 2-part "value.signature" cookie)
+        // always rejected — silently clobbering the valid signed cookie and
+        // breaking attribution. The script now only exposes a read helper for
+        // any front-end consumers.
         ?>
         <script type="text/javascript">
         (function() {
             var affilyncTracking = {
-                params: <?php echo wp_json_encode( $track_params ); ?>,
-                cookieDuration: <?php echo intval( $cookie_duration ); ?>,
                 cookieName: '<?php echo esc_js( self::COOKIE_NAME ); ?>',
 
-                init: function() {
-                    var tracked = this.getUrlParams();
-                    if (Object.keys(tracked).length > 0) {
-                        this.storeCookie(tracked);
-                    }
-                },
-
-                getUrlParams: function() {
-                    var params = {};
-                    var urlParams = new URLSearchParams(window.location.search);
-                    var paramMap = {
-                        'ref': 'affiliate_id',
-                        'aff': 'affiliate_id',
-                        'affiliate': 'affiliate_id',
-                        'affiliate_id': 'affiliate_id',
-                        'campaign': 'campaign_id',
-                        'campaign_id': 'campaign_id',
-                        'link': 'link_id',
-                        'link_id': 'link_id',
-                        'click': 'click_id',
-                        'click_id': 'click_id'
-                    };
-
-                    this.params.forEach(function(key) {
-                        if (urlParams.has(key)) {
-                            var mappedKey = paramMap[key] || key;
-                            params[mappedKey] = urlParams.get(key);
-                        }
-                    });
-
-                    return params;
-                },
-
-                storeCookie: function(data) {
-                    data.captured_at = Math.floor(Date.now() / 1000);
-                    data.landing_url = window.location.href;
-                    data.referrer = document.referrer || '';
-
-                    var encoded = btoa(JSON.stringify(data));
-                    var expires = new Date();
-                    expires.setDate(expires.getDate() + this.cookieDuration);
-
-                    document.cookie = this.cookieName + '=' + encoded +
-                        '; expires=' + expires.toUTCString() +
-                        '; path=/; SameSite=Lax' +
-                        (location.protocol === 'https:' ? '; Secure' : '');
-                },
-
+                // Read-only helper. Returns the decoded tracking payload from
+                // the signed cookie (the JSON lives in the part before the
+                // "." signature separator), or null if absent/malformed.
                 getCookie: function() {
                     var cookies = document.cookie.split(';');
                     for (var i = 0; i < cookies.length; i++) {
@@ -419,7 +372,6 @@ class Affilync_Tracking_Cookie_Handler {
                 }
             };
 
-            affilyncTracking.init();
             window.affilyncTracking = affilyncTracking;
         })();
         </script>

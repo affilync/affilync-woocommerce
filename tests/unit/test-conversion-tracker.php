@@ -216,15 +216,27 @@ class Test_Conversion_Tracker extends TestCase {
     // ------------------------------------------------------------------
 
     public function test_notify_refund_callback_calls_api() {
+        // Refund goes to the HMAC-gated /api/woocommerce/{id}/refund endpoint
+        // via post_signed(), not the phantom /api/conversions/{id}/refund.
         $this->api_client->expects( $this->once() )
-            ->method( 'post' )
+            ->method( 'post_signed' )
+            ->with(
+                $this->equalTo( '/api/woocommerce/conv_abc/refund' ),
+                $this->callback(
+                    function ( $payload ) {
+                        return isset( $payload['status'] ) && 'refunded' === $payload['status']
+                            && isset( $payload['order_id'] ) && 500 === $payload['order_id']
+                            && ! empty( $payload['idempotency_key'] );
+                    }
+                )
+            )
             ->willReturn( array( 'ok' => true ) );
 
         $this->tracker->async_notify_refund_callback( 'conv_abc', 'refunded', 500 );
     }
 
     public function test_notify_refund_callback_logs_error_on_failure() {
-        $this->api_client->method( 'post' )
+        $this->api_client->method( 'post_signed' )
             ->willReturn( new WP_Error( 'api_error', 'Failed' ) );
 
         $this->audit_logger->expects( $this->atLeastOnce() )
@@ -367,18 +379,17 @@ class Test_Conversion_Tracker extends TestCase {
     // Commission calculation — SEC-XIV-04
     // ------------------------------------------------------------------
 
-    public function test_commission_uses_api_rate_when_available() {
+    public function test_commission_uses_default_rate_even_with_campaign() {
         $method = new ReflectionMethod( Affilync_Tracking_Conversion_Tracker::class, 'calculate_commission' );
         $method->setAccessible( true );
 
         // Set default rate in settings.
         update_option( 'affilync_settings', array( 'default_commission_rate' => 0.10 ) );
 
-        // API returns campaign rate of 25%.
-        $this->api_client->method( 'get' )->willReturn( array(
-            'commission_rate' => 0.25,
-        ) );
-
+        // The local commission is display-only; the server recomputes the
+        // authoritative amount on ingest. No per-conversion campaign-rate API
+        // call is made (the old /api/campaigns/{id} route 404'd), so even with
+        // a campaign_id present the local estimate uses the default rate.
         $order = $this->create_mock_order( 600, 'completed', 200.00 );
         $attribution = array(
             'affiliate_id' => 'aff_1',
@@ -386,8 +397,8 @@ class Test_Conversion_Tracker extends TestCase {
         );
 
         $commission = $method->invoke( $this->tracker, $order, $attribution );
-        // 200.00 * 0.25 = 50.00
-        $this->assertSame( 50.0, $commission );
+        // 200.00 * 0.10 = 20.00
+        $this->assertSame( 20.0, $commission );
     }
 
     public function test_commission_falls_back_to_default_rate() {
@@ -429,10 +440,8 @@ class Test_Conversion_Tracker extends TestCase {
         $method = new ReflectionMethod( Affilync_Tracking_Conversion_Tracker::class, 'calculate_commission' );
         $method->setAccessible( true );
 
-        // API returns absurd rate.
-        $this->api_client->method( 'get' )->willReturn( array(
-            'commission_rate' => 5.0, // 500%!
-        ) );
+        // An absurd configured default rate is clamped to 1.0 as a safety net.
+        update_option( 'affilync_settings', array( 'default_commission_rate' => 5.0 ) ); // 500%!
 
         $order = $this->create_mock_order( 603, 'completed', 100.00 );
         $attribution = array( 'campaign_id' => 'camp_bad' );
@@ -443,25 +452,22 @@ class Test_Conversion_Tracker extends TestCase {
     }
 
     // ------------------------------------------------------------------
-    // Commission rate caching
+    // Commission rate resolution (server-authoritative)
     // ------------------------------------------------------------------
 
-    public function test_campaign_rate_caches_in_transient() {
+    public function test_campaign_commission_rate_returns_false() {
+        // The per-conversion campaign-rate lookup was removed: the server
+        // recomputes commission authoritatively on ingest and the old
+        // /api/campaigns/{id} GET 404'd (and tripped the API circuit breaker).
+        // The helper now always returns false so callers use the default rate.
+        // It must NOT make any API call.
         $method = new ReflectionMethod( Affilync_Tracking_Conversion_Tracker::class, 'get_campaign_commission_rate' );
         $method->setAccessible( true );
 
-        // First call: API returns rate.
-        $this->api_client->method( 'get' )->willReturn( array(
-            'commission_rate' => 0.20,
-        ) );
+        $this->api_client->expects( $this->never() )->method( 'get' );
 
         $rate = $method->invoke( $this->tracker, 'camp_cache' );
-        $this->assertSame( 0.20, $rate );
-
-        // Should now be cached in transient.
-        $cache_key = 'affilync_campaign_rate_' . md5( 'camp_cache' );
-        $cached = get_transient( $cache_key );
-        $this->assertNotFalse( $cached );
+        $this->assertFalse( $rate );
     }
 
     // ------------------------------------------------------------------
