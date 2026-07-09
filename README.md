@@ -64,7 +64,7 @@ Connect your WooCommerce store to the Affilync affiliate marketing platform for 
 
 ```bash
 # Clone the repository
-git clone https://github.com/moneyflowz367/affilync-woocommerce.git
+git clone https://github.com/affilync/affilync-woocommerce.git
 
 # Navigate to your WordPress plugins directory
 cd /path/to/wordpress/wp-content/plugins/
@@ -226,7 +226,7 @@ add_filter('affilync_cookie_duration', function($days) {
 
 ```bash
 # Clone repository
-git clone https://github.com/moneyflowz367/affilync-woocommerce.git
+git clone https://github.com/affilync/affilync-woocommerce.git
 cd affilync-woocommerce
 
 # Install dependencies
@@ -372,7 +372,7 @@ Yes, product variations are synced as separate products with parent-child relati
 - **Documentation:** [docs.affilync.com](https://docs.affilync.com)
 - **Support Portal:** [support.affilync.com](https://support.affilync.com)
 - **Email:** support@affilync.com
-- **GitHub Issues:** [Report a bug](https://github.com/moneyflowz367/affilync-woocommerce/issues)
+- **GitHub Issues:** [Report a bug](https://github.com/affilync/affilync-woocommerce/issues)
 
 ## Contributing
 
