@@ -745,7 +745,34 @@ if ( ! function_exists( 'wc_get_product' ) ) {
 
 if ( ! function_exists( 'wc_get_products' ) ) {
     function wc_get_products( $args = array() ) {
+        // Tests can seed a catalog of ids via $GLOBALS['affilync_test_product_ids'];
+        // this honors limit/offset so batch paging can be exercised. Default: [].
+        if ( isset( $GLOBALS['affilync_test_product_ids'] ) && is_array( $GLOBALS['affilync_test_product_ids'] ) ) {
+            $ids    = $GLOBALS['affilync_test_product_ids'];
+            $offset = isset( $args['offset'] ) ? (int) $args['offset'] : 0;
+            $limit  = isset( $args['limit'] ) ? (int) $args['limit'] : -1;
+            if ( $limit < 0 ) {
+                return array_slice( $ids, $offset );
+            }
+            return array_slice( $ids, $offset, $limit );
+        }
         return array();
+    }
+}
+
+if ( ! function_exists( 'as_next_scheduled_action' ) ) {
+    function as_next_scheduled_action( $hook, $args = null, $group = '' ) {
+        // Tests can force "already scheduled" via $GLOBALS['affilync_test_next_action'].
+        return isset( $GLOBALS['affilync_test_next_action'] ) ? $GLOBALS['affilync_test_next_action'] : false;
+    }
+}
+
+if ( ! function_exists( 'wp_count_posts' ) ) {
+    function wp_count_posts( $type = 'post', $perm = '' ) {
+        $publish = isset( $GLOBALS['affilync_test_product_ids'] ) && is_array( $GLOBALS['affilync_test_product_ids'] )
+            ? count( $GLOBALS['affilync_test_product_ids'] )
+            : 0;
+        return (object) array( 'publish' => $publish );
     }
 }
 

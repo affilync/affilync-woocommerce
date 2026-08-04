@@ -698,6 +698,21 @@ class Affilync_API_Client {
     }
 
     /**
+     * Sync a PAGE of products in one signed request.
+     *
+     * Posts to the HMAC-gated /api/woocommerce/products/bulk-sync endpoint so a
+     * large catalog syncs in ~hundreds-per-request pages instead of one request
+     * per product. The response envelope's data carries per-item results plus
+     * the plan cap ({synced, updated, skipped_limit, failed, cap, results}).
+     *
+     * @param array $products List of product-data arrays (build_product_data()).
+     * @return array|WP_Error Result or error.
+     */
+    public function bulk_sync_products( $products ) {
+        return $this->post_signed( '/api/woocommerce/products/bulk-sync', array( 'products' => array_values( $products ) ) );
+    }
+
+    /**
      * Delete a synced product.
      *
      * Targets /api/woocommerce/products/{id}. The old /api/products/{id} path
