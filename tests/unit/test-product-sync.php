@@ -157,12 +157,33 @@ class Test_Product_Sync extends TestCase {
         $mock_wpdb = $this->create_mock_wpdb();
         $GLOBALS['wpdb'] = $mock_wpdb;
 
-        // API returns success.
+        // API returns the real Affilync envelope: the id lives at
+        // data.affilync_product_id, NOT a top-level product_id. (This mock used to
+        // return array('product_id' => ...) — the wrong shape — so the test passed
+        // while production stored NULL and broke deletes.) Assert the id captured
+        // from the envelope is what gets persisted; against the old extraction this
+        // fails because affilync_product_id would be NULL.
         $this->api_client->method( 'sync_product' )->willReturn( array(
-            'product_id' => 'aff_prod_50',
+            'success' => true,
+            'message' => 'Success',
+            'data'    => array(
+                'affilync_product_id'    => 'aff_prod_50',
+                'woocommerce_product_id' => 50,
+                'status'                 => 'synced',
+            ),
         ) );
 
-        $mock_wpdb->expects( $this->once() )->method( 'update' )->willReturn( 1 );
+        $mock_wpdb->expects( $this->once() )
+            ->method( 'update' )
+            ->with(
+                $this->anything(),
+                $this->callback( function ( $data ) {
+                    return isset( $data['affilync_product_id'] )
+                        && 'aff_prod_50' === $data['affilync_product_id'];
+                } ),
+                $this->anything()
+            )
+            ->willReturn( 1 );
 
         $result = $this->sync->sync_product( 50 );
         $this->assertTrue( $result );

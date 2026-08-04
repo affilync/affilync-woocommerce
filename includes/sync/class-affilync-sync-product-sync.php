@@ -295,7 +295,21 @@ class Affilync_Sync_Product_Sync {
         }
 
         // Update sync status.
-        $affilync_id = isset( $result['product_id'] ) ? $result['product_id'] : null;
+        //
+        // The API returns the standard Affilync envelope:
+        //   { "success": true, "message": "Success",
+        //     "data": { "affilync_product_id": "<uuid>", "woocommerce_product_id": .. } }
+        // (see affilync-api app/routes/integrations/woocommerce.py::sync_product ->
+        //  wrap_response). This previously read a top-level $result['product_id'],
+        // which is NEVER present, so every product was marked synced with a NULL
+        // affilync id — and delete_product() only calls the API when that id is
+        // truthy, so deletes silently no-opped. Read data.affilync_product_id, with
+        // fallbacks so a renamed/un-enveloped response still resolves.
+        $affilync_id = $result['data']['affilync_product_id']
+            ?? $result['data']['product_id']
+            ?? $result['affilync_product_id']
+            ?? $result['product_id']
+            ?? null;
         $this->mark_as_synced( $product_id, $affilync_id );
 
         return true;
