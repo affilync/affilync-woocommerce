@@ -243,6 +243,10 @@ class Test_REST_Controller extends TestCase {
     public function test_track_conversion_rejects_invalid_hmac() {
         $request = new WP_REST_Request( 'POST', '/affilync/v1/conversions/track' );
         $request->set_header( 'X-Affilync-Signature', 'bad_sig' );
+        // A timestamp is required and checked BEFORE the signature; the real
+        // plugin always sends one. Without it the handler returns
+        // 'missing_timestamp' and never reaches the signature check under test.
+        $request->set_header( 'X-Affilync-Timestamp', (string) time() );
         $request->set_body( '{"order_id":1}' );
 
         $this->hmac_validator->method( 'verify' )->willReturn( false );

@@ -41,6 +41,22 @@ class Affilync_Sync_Product_Sync {
     const BATCH_SIZE = 50;
 
     /**
+     * Products pushed per background full-sync batch. Smaller than BATCH_SIZE:
+     * each item is a live API round-trip, and one Action Scheduler action must
+     * finish well inside PHP's max_execution_time.
+     *
+     * @var int
+     */
+    const FULL_SYNC_BATCH_SIZE = 20;
+
+    /**
+     * Action Scheduler hook for a single full-sync batch (arg: integer offset).
+     *
+     * @var string
+     */
+    const FULL_SYNC_HOOK = 'affilync_full_sync_batch';
+
+    /**
      * Constructor.
      *
      * @param Affilync_API_Client $api_client API client.
@@ -69,6 +85,9 @@ class Affilync_Sync_Product_Sync {
 
         // Cron hook for batch sync.
         add_action( 'affilync_sync_products', array( $this, 'sync_pending' ) );
+
+        // Action Scheduler hook: one batch of the background full-catalog sync.
+        add_action( self::FULL_SYNC_HOOK, array( $this, 'run_full_sync_batch' ), 10, 1 );
     }
 
     /**
@@ -322,34 +341,70 @@ class Affilync_Sync_Product_Sync {
      * @return array Product data.
      */
     private function build_product_data( $product ) {
-        $data = array(
-            'external_id'       => (string) $product->get_id(),
-            'platform'          => 'woocommerce',
+        // The shape MUST match the affilync-api WooCommerceProductSync schema
+        // (app/routes/integrations/woocommerce.py). Getting this wrong is a
+        // silent 422 on every product. Specifically:
+        //   - the id field is `product_id` (int), REQUIRED — not `external_id`
+        //     (the API builds external_id = "woocommerce_{product_id}" itself);
+        //   - the affiliate URL field is `permalink`, not `url`;
+        //   - `categories`, `tags`, `images` are lists of STRINGS (names / URLs),
+        //     not the {id,name,slug} / {id,url,alt} objects the helpers return.
+        // Unknown extra fields the API ignores, but the required/typed ones above
+        // must be exact. (Historically build_product_data emitted external_id +
+        // object arrays, so real syncs 422'd — the live smoke test used a
+        // hand-built payload and never caught it.)
+        $regular = $product->get_regular_price();
+        $sale    = $product->get_sale_price();
+
+        return array(
+            'product_id'        => (int) $product->get_id(),
             'name'              => $product->get_name(),
             'description'       => $product->get_description(),
             'short_description' => $product->get_short_description(),
-            'url'               => $product->get_permalink(),
-            'price'             => floatval( $product->get_price() ),
-            'regular_price'     => floatval( $product->get_regular_price() ),
-            'sale_price'        => $product->get_sale_price() ? floatval( $product->get_sale_price() ) : null,
-            'currency'          => get_woocommerce_currency(),
             'sku'               => $product->get_sku(),
+            'price'             => floatval( $product->get_price() ),
+            'regular_price'     => ( '' !== $regular && null !== $regular ) ? floatval( $regular ) : null,
+            'sale_price'        => ( '' !== $sale && null !== $sale ) ? floatval( $sale ) : null,
+            'currency'          => get_woocommerce_currency(),
             'stock_status'      => $product->get_stock_status(),
             'stock_quantity'    => $product->get_stock_quantity(),
-            'is_in_stock'       => $product->is_in_stock(),
-            'type'              => $product->get_type(),
-            'categories'        => $this->get_product_categories( $product ),
-            'tags'              => $this->get_product_tags( $product ),
-            'images'            => $this->get_product_images( $product ),
-            'attributes'        => $this->get_product_attributes( $product ),
+            'categories'        => $this->term_names( $this->get_product_categories( $product ) ),
+            'tags'              => $this->term_names( $this->get_product_tags( $product ) ),
+            'images'            => $this->image_urls( $this->get_product_images( $product ) ),
+            'permalink'         => $product->get_permalink(),
         );
+    }
 
-        // Add variations for variable products.
-        if ( $product->is_type( 'variable' ) ) {
-            $data['variations'] = $this->get_product_variations( $product );
+    /**
+     * Reduce {id,name,slug} term rows to a list of name strings (API shape).
+     *
+     * @param array $terms Term rows.
+     * @return string[] Names.
+     */
+    private function term_names( $terms ) {
+        $names = array();
+        foreach ( (array) $terms as $t ) {
+            if ( isset( $t['name'] ) && '' !== $t['name'] ) {
+                $names[] = $t['name'];
+            }
         }
+        return $names;
+    }
 
-        return $data;
+    /**
+     * Reduce {id,url,alt} image rows to a list of URL strings (API shape).
+     *
+     * @param array $images Image rows.
+     * @return string[] URLs.
+     */
+    private function image_urls( $images ) {
+        $urls = array();
+        foreach ( (array) $images as $img ) {
+            if ( isset( $img['url'] ) && '' !== $img['url'] ) {
+                $urls[] = $img['url'];
+            }
+        }
+        return $urls;
     }
 
     /**
@@ -604,6 +659,174 @@ class Affilync_Sync_Product_Sync {
      * Full sync of all products.
      *
      * @return array Results.
+     */
+    /**
+     * Start a full-catalog sync as a background, batched Action Scheduler job.
+     *
+     * The old full_sync() loaded EVERY product id (limit=-1) and pushed them all
+     * inline in the request that triggered it — fine for a demo store, a memory
+     * and max_execution_time hazard for a real catalog, and it blocks the caller
+     * until the last product is pushed. This instead enqueues the first batch and
+     * returns immediately; each batch pages the catalog and self-schedules the
+     * next until done (run_full_sync_batch). Falls back to the inline full_sync()
+     * only when Action Scheduler is unavailable (it ships with WooCommerce, so
+     * that path is rare).
+     *
+     * @return array Status payload.
+     */
+    public function start_full_sync() {
+        if ( ! function_exists( 'as_schedule_single_action' ) ) {
+            // No Action Scheduler — do it inline as a last resort.
+            return $this->full_sync();
+        }
+
+        // Don't stack concurrent full syncs.
+        if ( function_exists( 'as_next_scheduled_action' )
+            && false !== as_next_scheduled_action( self::FULL_SYNC_HOOK ) ) {
+            return array(
+                'status'  => 'already_running',
+                'message' => __( 'A full product sync is already in progress.', 'affilync-woocommerce' ),
+            );
+        }
+
+        // Cheap count (no id load) for the "N products" message.
+        $total  = 0;
+        $counts = function_exists( 'wp_count_posts' ) ? wp_count_posts( 'product' ) : null;
+        if ( $counts && isset( $counts->publish ) ) {
+            $total = (int) $counts->publish;
+        }
+
+        update_option( 'affilync_full_sync_running', true );
+        update_option( 'affilync_full_sync_started_at', current_time( 'mysql', true ) );
+
+        as_schedule_single_action( time(), self::FULL_SYNC_HOOK, array( 0 ), 'affilync' );
+
+        return array(
+            'status'  => 'scheduled',
+            'total'   => $total,
+            'message' => sprintf(
+                /* translators: %d: number of products */
+                __( 'Full product sync started in the background for %d products.', 'affilync-woocommerce' ),
+                $total
+            ),
+        );
+    }
+
+    /**
+     * Process one batch of the background full-catalog sync, then self-schedule
+     * the next batch if more products remain. Registered on FULL_SYNC_HOOK.
+     *
+     * @param int $offset Catalog offset for this batch.
+     */
+    public function run_full_sync_batch( $offset = 0 ) {
+        $offset = max( 0, (int) $offset );
+
+        $ids = wc_get_products(
+            array(
+                'status'  => 'publish',
+                'limit'   => self::FULL_SYNC_BATCH_SIZE,
+                'offset'  => $offset,
+                'orderby' => 'ID',
+                'order'   => 'ASC',
+                'return'  => 'ids',
+            )
+        );
+
+        if ( empty( $ids ) ) {
+            $this->finish_full_sync();
+            return;
+        }
+
+        // Build the page payload once and push it in a SINGLE bulk request,
+        // rather than one HTTP round-trip per product (the whole point of the
+        // batched design — it scales to large catalogs). Each product still gets
+        // a queue row for status/retry bookkeeping.
+        $products = array();
+        foreach ( $ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            if ( ! $product || 'publish' !== $product->get_status() ) {
+                continue;
+            }
+            $this->queue_product_sync( $product_id );
+            $products[] = $this->build_product_data( $product );
+        }
+
+        if ( ! empty( $products ) ) {
+            $result = $this->api_client->bulk_sync_products( $products );
+
+            if ( is_wp_error( $result ) ) {
+                // Whole page failed to reach the API — mark for retry.
+                foreach ( $ids as $product_id ) {
+                    $this->update_sync_status( $product_id, 'failed', $result->get_error_message() );
+                    $this->increment_retry_count( $product_id );
+                }
+            } else {
+                $data = isset( $result['data'] ) ? $result['data'] : $result;
+                $this->apply_bulk_results( $data );
+
+                // Plan product cap reached — stop paging; the merchant must
+                // upgrade to sync more. Record it so the UI can surface it.
+                if ( ! empty( $data['cap']['limit_reached'] ) ) {
+                    update_option( 'affilync_full_sync_limit_reached', true );
+                    $this->finish_full_sync();
+                    return;
+                }
+            }
+        }
+
+        // A full page means there is probably more; a short page is the last one.
+        if ( count( $ids ) === self::FULL_SYNC_BATCH_SIZE && function_exists( 'as_schedule_single_action' ) ) {
+            as_schedule_single_action(
+                time() + 5,
+                self::FULL_SYNC_HOOK,
+                array( $offset + self::FULL_SYNC_BATCH_SIZE ),
+                'affilync'
+            );
+        } else {
+            $this->finish_full_sync();
+        }
+    }
+
+    /**
+     * Apply a bulk-sync response's per-item results to the local queue rows.
+     *
+     * @param array $data The response envelope's `data` (synced/updated/
+     *                     skipped_limit/failed/cap/results).
+     */
+    private function apply_bulk_results( $data ) {
+        if ( empty( $data['results'] ) || ! is_array( $data['results'] ) ) {
+            return;
+        }
+        foreach ( $data['results'] as $row ) {
+            $woo_id = isset( $row['woocommerce_product_id'] ) ? (int) $row['woocommerce_product_id'] : 0;
+            if ( ! $woo_id ) {
+                continue;
+            }
+            $status = isset( $row['status'] ) ? $row['status'] : '';
+            if ( 'synced' === $status || 'updated' === $status ) {
+                $aff_id = isset( $row['affilync_product_id'] ) ? $row['affilync_product_id'] : null;
+                $this->mark_as_synced( $woo_id, $aff_id );
+            } elseif ( 'skipped_limit' === $status ) {
+                $this->update_sync_status( $woo_id, 'skipped', 'Plan product limit reached' );
+            } else {
+                $this->update_sync_status( $woo_id, 'failed', 'Bulk sync failed' );
+                $this->increment_retry_count( $woo_id );
+            }
+        }
+    }
+
+    /**
+     * Mark the background full sync complete.
+     */
+    private function finish_full_sync() {
+        update_option( 'affilync_full_sync_running', false );
+        update_option( 'affilync_full_sync_completed_at', current_time( 'mysql', true ) );
+    }
+
+    /**
+     * Inline full-catalog sync (fallback when Action Scheduler is unavailable).
+     *
+     * Prefer start_full_sync(), which runs this work as a batched background job.
      */
     public function full_sync() {
         // Get all published products.

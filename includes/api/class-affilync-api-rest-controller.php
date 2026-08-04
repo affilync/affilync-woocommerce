@@ -566,7 +566,27 @@ class Affilync_API_REST_Controller {
         $full_sync = $request->get_param( 'full' ) === true;
 
         if ( $full_sync ) {
-            $result = $product_sync->full_sync();
+            // Full catalog sync runs as a batched background job (Action
+            // Scheduler) so a large catalog never blocks this request; it
+            // returns a status immediately rather than a synced/failed count.
+            $result = $product_sync->start_full_sync();
+
+            if ( is_wp_error( $result ) ) {
+                return $result;
+            }
+
+            // Background path returns a 'status'; the inline fallback (no Action
+            // Scheduler) returns synced/failed and falls through below.
+            if ( isset( $result['status'] ) ) {
+                return rest_ensure_response(
+                    array(
+                        'success' => true,
+                        'status'  => $result['status'],
+                        'total'   => isset( $result['total'] ) ? $result['total'] : null,
+                        'message' => $result['message'],
+                    )
+                );
+            }
         } else {
             $result = $product_sync->sync_pending();
         }

@@ -49,6 +49,9 @@ class Test_Product_Sync extends TestCase {
         $GLOBALS['wpdb'] = $this->saved_wpdb;
         $GLOBALS['wp_options'] = array();
         unset( $GLOBALS['affilync_test_wc_product'] );
+        unset( $GLOBALS['affilync_test_product_ids'] );
+        unset( $GLOBALS['affilync_test_next_action'] );
+        $GLOBALS['affilync_scheduled_actions'] = array();
         parent::tearDown();
     }
 
@@ -344,15 +347,25 @@ class Test_Product_Sync extends TestCase {
 
         $data = $method->invoke( $this->sync, $product );
 
-        $this->assertSame( '95', $data['external_id'] );
-        $this->assertSame( 'woocommerce', $data['platform'] );
+        // Shape MUST match the affilync-api WooCommerceProductSync schema. The id
+        // field is `product_id` (int, REQUIRED) and the URL field is `permalink`;
+        // this used to emit `external_id` (string) + `url` + object-arrays, which
+        // the API rejected (422) — so no real product ever synced.
+        $this->assertSame( 95, $data['product_id'] );
+        $this->assertArrayNotHasKey( 'external_id', $data );
+        $this->assertArrayNotHasKey( 'platform', $data );
         $this->assertSame( 'Test Product 95', $data['name'] );
         $this->assertSame( 49.99, $data['price'] );
         $this->assertSame( 'USD', $data['currency'] );
-        $this->assertArrayHasKey( 'categories', $data );
-        $this->assertArrayHasKey( 'tags', $data );
-        $this->assertArrayHasKey( 'images', $data );
-        $this->assertArrayHasKey( 'attributes', $data );
+        $this->assertSame( 'https://example.com/product/95', $data['permalink'] );
+        // categories / tags / images are lists of STRINGS, not {id,name,slug} /
+        // {id,url,alt} objects (which the API's List[str] fields reject).
+        $this->assertIsArray( $data['categories'] );
+        $this->assertContainsOnly( 'string', $data['categories'] );
+        $this->assertIsArray( $data['tags'] );
+        $this->assertContainsOnly( 'string', $data['tags'] );
+        $this->assertIsArray( $data['images'] );
+        $this->assertContainsOnly( 'string', $data['images'] );
     }
 
     // ------------------------------------------------------------------
@@ -369,6 +382,81 @@ class Test_Product_Sync extends TestCase {
         $this->assertIsArray( $result );
         $this->assertArrayHasKey( 'synced', $result );
         $this->assertArrayHasKey( 'failed', $result );
+    }
+
+    // ------------------------------------------------------------------
+    // start_full_sync / run_full_sync_batch (background batched sync)
+    // ------------------------------------------------------------------
+
+    public function test_start_full_sync_schedules_background_batch() {
+        $GLOBALS['affilync_test_product_ids'] = range( 1, 5 );
+        $GLOBALS['affilync_scheduled_actions'] = array();
+        unset( $GLOBALS['affilync_test_next_action'] );
+
+        $result = $this->sync->start_full_sync();
+
+        $this->assertSame( 'scheduled', $result['status'] );
+        $this->assertSame( 5, $result['total'] );
+        // First batch (offset 0) enqueued on the Action Scheduler hook.
+        $hooks = array_column( $GLOBALS['affilync_scheduled_actions'], 'hook' );
+        $this->assertContains( Affilync_Sync_Product_Sync::FULL_SYNC_HOOK, $hooks );
+        $this->assertTrue( get_option( 'affilync_full_sync_running' ) );
+    }
+
+    public function test_start_full_sync_reports_already_running() {
+        $GLOBALS['affilync_test_next_action'] = 12345; // as_next_scheduled_action truthy.
+        $result = $this->sync->start_full_sync();
+        $this->assertSame( 'already_running', $result['status'] );
+    }
+
+    public function test_run_full_sync_batch_bulk_pushes_and_marks_synced() {
+        // A short page (< FULL_SYNC_BATCH_SIZE) => finishes, does not reschedule.
+        $GLOBALS['affilync_test_product_ids'] = array( 101, 102 );
+        $GLOBALS['affilync_scheduled_actions'] = array();
+        $this->override_wc_get_product( $this->create_mock_product( 101, 'publish' ) );
+        $mock_wpdb = $this->create_mock_wpdb();
+        $GLOBALS['wpdb'] = $mock_wpdb;
+
+        $this->api_client->method( 'bulk_sync_products' )->willReturn(
+            array(
+                'data' => array(
+                    'synced'        => 2,
+                    'updated'       => 0,
+                    'skipped_limit' => 0,
+                    'failed'        => 0,
+                    'cap'           => array( 'limit_reached' => false ),
+                    'results'       => array(
+                        array( 'woocommerce_product_id' => 101, 'affilync_product_id' => 'aff_101', 'status' => 'synced' ),
+                        array( 'woocommerce_product_id' => 102, 'affilync_product_id' => 'aff_102', 'status' => 'synced' ),
+                    ),
+                ),
+            )
+        );
+        // Results applied => mark_as_synced => wpdb->update called.
+        $mock_wpdb->expects( $this->atLeastOnce() )->method( 'update' )->willReturn( 1 );
+
+        $this->sync->run_full_sync_batch( 0 );
+
+        $hooks = array_column( $GLOBALS['affilync_scheduled_actions'], 'hook' );
+        $this->assertNotContains( Affilync_Sync_Product_Sync::FULL_SYNC_HOOK, $hooks );
+    }
+
+    public function test_run_full_sync_batch_stops_when_cap_reached() {
+        // A FULL page would normally reschedule the next batch; the cap stops it.
+        $GLOBALS['affilync_test_product_ids'] = range( 1, Affilync_Sync_Product_Sync::FULL_SYNC_BATCH_SIZE );
+        $GLOBALS['affilync_scheduled_actions'] = array();
+        $this->override_wc_get_product( $this->create_mock_product( 1, 'publish' ) );
+        $GLOBALS['wpdb'] = $this->create_mock_wpdb();
+
+        $this->api_client->method( 'bulk_sync_products' )->willReturn(
+            array( 'data' => array( 'cap' => array( 'limit_reached' => true ), 'results' => array() ) )
+        );
+
+        $this->sync->run_full_sync_batch( 0 );
+
+        $hooks = array_column( $GLOBALS['affilync_scheduled_actions'], 'hook' );
+        $this->assertNotContains( Affilync_Sync_Product_Sync::FULL_SYNC_HOOK, $hooks );
+        $this->assertTrue( get_option( 'affilync_full_sync_limit_reached' ) );
     }
 
     // ------------------------------------------------------------------
